@@ -12,10 +12,10 @@ from lerobot.processor import make_default_processors
 
 import numpy as np
 
-NUM_EPISODES = 5
+NUM_EPISODES = 2
 FPS = 30
-EPISODE_TIME_SEC = 60
-RESET_TIME_SEC = 10
+EPISODE_TIME_SEC = 10
+RESET_TIME_SEC = 5
 TASK_DESCRIPTION = "My task description"
 
 # Create robot configuration
@@ -30,7 +30,7 @@ robot_config = RC10FollowerConfig(
     gripper_port="/dev/ttyUSB0",
     gripper_baudrate=115200,
     cameras={
-        "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS) # Optional: fourcc="MJPG" for troubleshooting OpenCV async error.
+        "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS) # Optional: fourcc="MJPG" for troubleshooting OpenCV async error.
     },
 )
 
@@ -66,6 +66,7 @@ dataset = LeRobotDataset.create(
     features=dataset_features,
     robot_type=robot.name,
     use_videos=True,
+    video_backend="libx264",
     image_writer_threads=4,
 )
 
@@ -128,4 +129,6 @@ while episode_idx < NUM_EPISODES and not events["stop_recording"]:
 log_say("Stop recording")
 robot.disconnect()
 teleop.disconnect()
-# dataset.push_to_hub()
+# dataset
+# dataset.save_episode
+dataset.finalize()
