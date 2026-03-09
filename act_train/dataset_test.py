@@ -11,6 +11,8 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
+import matplotlib.pyplot as plt
+import numpy as np
 
 def make_delta_timestamps(delta_indices: list[int] | None, fps: int) -> list[float]:
     if delta_indices is None:
@@ -37,10 +39,10 @@ def main():
 
     cfg = ACTConfig(input_features=input_features, output_features=output_features)
     policy = ACTPolicy(cfg)
-    preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
+    # preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
 
-    policy.train()
-    policy.to(device)
+    # policy.train()
+    # policy.to(device)
 
     # To perform action chunking, ACT expects a given number of actions as targets
     delta_timestamps = {
@@ -53,54 +55,13 @@ def main():
         for k in cfg.image_features
     }
 
-    # Instantiate the dataset
     dataset = LeRobotDataset(dataset_id, delta_timestamps=delta_timestamps)
-    # dataset = LeRobotDataset(dataset_id)
     print(len(dataset))
 
-    # Create the optimizer and dataloader for offline training
-    optimizer = cfg.get_optimizer_preset().build(policy.parameters())
-    batch_size = 32
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        pin_memory=device.type != "cpu",
-        drop_last=True,
-    )
-
-    # Number of training steps and logging frequency
-    training_steps = 10
-    log_freq = 1
-
-    # Run training loop
-    step = 0
-    done = False
-    while not done:
-        for batch in dataloader:
-            batch = preprocessor(batch)
-            loss, _ = policy.forward(batch)
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
-
-            if step % log_freq == 0:
-                print(f"step: {step} loss: {loss.item():.3f}")
-            step += 1
-            if step >= training_steps:
-                done = True
-                break
-
-    # Save the policy checkpoint, alongside the pre/post processors
-    policy.save_pretrained(output_directory)
-    preprocessor.save_pretrained(output_directory)
-    postprocessor.save_pretrained(output_directory)
-
-    # Save all assets to the Hub
-    # policy.push_to_hub("<user>/robot_learning_tutorial_act")
-    # preprocessor.push_to_hub("<user>/robot_learning_tutorial_act")
-    # postprocessor.push_to_hub("<user>/robot_learning_tutorial_act")
-
+    print(dataset[0].keys())
+    a = np.transpose(dataset[0]['observation.images.side'], (1, 2, 0))
+    plt.imshow(a)
+    plt.show()
 
 if __name__ == "__main__":
     main()

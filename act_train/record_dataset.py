@@ -1,38 +1,62 @@
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import hw_to_dataset_features
-from lerobot.robots.so_follower import SO100Follower, SO100FollowerConfig
-from lerobot.teleoperators.so_leader.config_so100_leader import SO100LeaderConfig
-from lerobot.teleoperators.so_leader.so100_leader import SO100Leader
+from lerobot.robots.rc10_follower import RC10FollowerCut, RC10FollowerConfig
+from lerobot.teleoperators.space_mouse import SpaceMouseTeleopConfig
+from lerobot.teleoperators.space_mouse import SpaceMouseTeleopCut
 from lerobot.utils.control_utils import init_keyboard_listener
 from lerobot.utils.utils import log_say
 from lerobot.utils.visualization_utils import init_rerun
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.processor import make_default_processors
 
+import numpy as np
+
 NUM_EPISODES = 5
 FPS = 30
-EPISODE_TIME_SEC = 60
+EPISODE_TIME_SEC = 30
 RESET_TIME_SEC = 10
 TASK_DESCRIPTION = "My task description"
 
 # Create robot configuration
-robot_config = SO100FollowerConfig(
-    id="my_awesome_follower_arm",
+robot_config = RC10FollowerConfig(
+    id="my_rc10_follower",
+    ip="10.10.10.10",
+    rate_hz=100,
+    velocity=1.0,
+    acceleration=1.0,
+    threshold_position=0.001,
+    threshold_angle=1.0,
+    gripper_port="/dev/ttyUSB0",
+    gripper_baudrate=115200,
     cameras={
-        "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS) # Optional: fourcc="MJPG" for troubleshooting OpenCV async error.
+        "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
+        "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS)
+
     },
-    port="/dev/tty.usbmodem58760434471",
+    resolution=(224,224),
+    limits = ((-0.5, 0.5), (-0.5, 0.5), (0.22, 0.5))
 )
 
-teleop_config = SO100LeaderConfig(
-    id="my_awesome_leader_arm",
-    port="/dev/tty.usbmodem585A0077581",
+teleop_config = SpaceMouseTeleopConfig(
+    id="my_teleop_space_mouse",
+    max_speed=0.15,
+    max_rot_speed=1.2,
+    deadzone=200.0,
+    alpha=0.3,
+    poll_rate=100,
+    device_num=0,
+    x_init=0.5,
+    y_init=0.5,
+    z_init=0.5,
+    roll_init=np.pi,
+    pitch_init=0.0,
+    yaw_init=0.0,
 )
 
 # Initialize the robot and teleoperator
-robot = SO100Follower(robot_config)
-teleop = SO100Leader(teleop_config)
+robot = RC10FollowerCut(robot_config)
+teleop = SpaceMouseTeleopCut(teleop_config)
 
 # Configure the dataset features
 action_features = hw_to_dataset_features(robot.action_features, "action")
@@ -41,11 +65,12 @@ dataset_features = {**action_features, **obs_features}
 
 # Create the dataset
 dataset = LeRobotDataset.create(
-    repo_id="<hf_username>/<dataset_repo_id>",
+    repo_id="local/test2",
     fps=FPS,
     features=dataset_features,
     robot_type=robot.name,
     use_videos=True,
+    video_backend="libx264",
     image_writer_threads=4,
 )
 
@@ -108,4 +133,6 @@ while episode_idx < NUM_EPISODES and not events["stop_recording"]:
 log_say("Stop recording")
 robot.disconnect()
 teleop.disconnect()
-dataset.push_to_hub()
+# dataset
+# dataset.save_episode
+dataset.finalize()
