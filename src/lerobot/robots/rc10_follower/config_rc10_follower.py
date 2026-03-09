@@ -17,5 +17,7 @@ class RC10FollowerConfig(RobotConfig):
     gripper_port: str = "/dev/ttyUSB0"
     gripper_baudrate: int = 115200
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    resolution: tuple = (224, 224)
+    limits: tuple = ((-0.1, 0.1), (-0.1, 0.1), (0.0, 0.1))
 
 
