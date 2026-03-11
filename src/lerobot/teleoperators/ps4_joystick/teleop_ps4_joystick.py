@@ -61,7 +61,7 @@ class PS4JoystickTeleop(Teleoperator):
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
-        x, y, z, yaw = self._ps4_joystick.get_delta()
+        x, y, z, roll, pitch, yaw = self._ps4_joystick.get_delta()
         gripper = self._ps4_joystick.get_gripper_state()
         return {
             "x.delta": float(x)*self.config.action_pos_scale,
