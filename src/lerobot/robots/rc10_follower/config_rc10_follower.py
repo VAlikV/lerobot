@@ -20,4 +20,7 @@ class RC10FollowerConfig(RobotConfig):
     resolution: tuple = (224, 224)
     limits: tuple = ((-0.1, 0.1), (-0.1, 0.1), (0.0, 0.1))
 
+    action_pos_scale: int = 1000
+    action_angle_scale: int = 100
+
 

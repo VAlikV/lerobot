@@ -75,12 +75,12 @@ class SpaceMouseTeleop(Teleoperator):
         x, y, z, roll, pitch, yaw = self._sm.get_delta()
         gripper = self._sm.get_gripper_state()
         return {
-            "x.delta": float(x),
-            "y.delta": float(y),
-            "z.delta": float(z),
-            "roll.delta": float(roll),
-            "pitch.delta": float(pitch),
-            "yaw.delta": float(yaw),
+            "x.delta": float(x)*self.config.action_pos_scale,
+            "y.delta": float(y)*self.config.action_pos_scale,
+            "z.delta": float(z)*self.config.action_pos_scale,
+            "roll.delta": float(roll)*self.config.action_angle_scale,
+            "pitch.delta": float(pitch)*self.config.action_angle_scale,
+            "yaw.delta": float(yaw)*self.config.action_angle_scale,
             "gripper.pos": float(gripper),
         }
 
@@ -161,12 +161,12 @@ class SpaceMouseTeleopCut(Teleoperator):
         x, y, z, roll, pitch, yaw = self._sm.get_delta()
         gripper = self._sm.get_gripper_state()
         return {
-            "x.delta": float(x),
-            "y.delta": float(y),
-            "z.delta": float(z),
+            "x.delta": float(x)*self.config.action_pos_scale,
+            "y.delta": float(y)*self.config.action_pos_scale,
+            "z.delta": float(z)*self.config.action_pos_scale,
             # "roll.delta": float(roll),
             # "pitch.delta": float(pitch),
-            "yaw.delta": float(yaw),
+            "yaw.delta": float(yaw)*self.config.action_angle_scale,
             "gripper.pos": float(gripper),
         }
 
