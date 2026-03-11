@@ -12,10 +12,10 @@ from lerobot.processor import make_default_processors
 
 import numpy as np
 
-NUM_EPISODES = 5
+NUM_EPISODES = 50
 FPS = 30
 EPISODE_TIME_SEC = 30
-RESET_TIME_SEC = 10
+RESET_TIME_SEC = 15
 TASK_DESCRIPTION = "My task description"
 
 # Create robot configuration
@@ -65,7 +65,7 @@ dataset_features = {**action_features, **obs_features}
 
 # Create the dataset
 dataset = LeRobotDataset.create(
-    repo_id="local/test2",
+    repo_id="local/ACT_RC10_50eps",
     fps=FPS,
     features=dataset_features,
     robot_type=robot.name,

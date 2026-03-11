@@ -26,7 +26,7 @@ def main():
     # Select your device
     device = torch.device("cuda")  # or "cuda" or "cpu"
 
-    dataset_id = "local/test1"
+    dataset_id = "local/ACT_RC10_50eps"
 
     # This specifies the inputs the model will be expecting and the outputs it will produce
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)
@@ -70,7 +70,7 @@ def main():
     )
 
     # Number of training steps and logging frequency
-    training_steps = 10
+    training_steps = 5000
     log_freq = 1
 
     # Run training loop

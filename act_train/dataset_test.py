@@ -28,7 +28,7 @@ def main():
     # Select your device
     device = torch.device("cuda")  # or "cuda" or "cpu"
 
-    dataset_id = "local/test1"
+    dataset_id = "local/ACT_RC10_50eps"
 
     # This specifies the inputs the model will be expecting and the outputs it will produce
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)
@@ -58,10 +58,10 @@ def main():
     dataset = LeRobotDataset(dataset_id, delta_timestamps=delta_timestamps)
     print(len(dataset))
 
-    print(dataset[0].keys())
-    a = np.transpose(dataset[0]['observation.images.side'], (1, 2, 0))
-    plt.imshow(a)
-    plt.show()
+    print(dataset[0]["action"])
+    # a = np.transpose(dataset[0]['observation.images.side'], (1, 2, 0))
+    # plt.imshow(a)
+    # plt.show()
 
 if __name__ == "__main__":
     main()
