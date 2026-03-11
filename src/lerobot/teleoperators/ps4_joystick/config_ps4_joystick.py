@@ -15,3 +15,6 @@ class PS4JoystickTeleopConfig(TeleoperatorConfig):
     y_init: float = 0.5
     z_init: float = 0.5
     yaw_init: float = 0.0
+
+    action_pos_scale: int = 1000
+    action_angle_scale: int = 100

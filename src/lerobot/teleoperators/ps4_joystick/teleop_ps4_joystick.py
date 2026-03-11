@@ -64,10 +64,10 @@ class PS4JoystickTeleop(Teleoperator):
         x, y, z, yaw = self._ps4_joystick.get_delta()
         gripper = self._ps4_joystick.get_gripper_state()
         return {
-            "x.delta": float(x),
-            "y.delta": float(y),
-            "z.delta": float(z),
-            "yaw.delta": float(yaw),
+            "x.delta": float(x)*self.config.action_pos_scale,
+            "y.delta": float(y)*self.config.action_pos_scale,
+            "z.delta": float(z)*self.config.action_pos_scale,
+            "yaw.delta": float(yaw)*self.config.action_angle_scale,
             "gripper.pos": float(gripper),
         }
     
