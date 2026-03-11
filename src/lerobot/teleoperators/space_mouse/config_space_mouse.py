@@ -18,3 +18,6 @@ class SpaceMouseTeleopConfig(TeleoperatorConfig):
     roll_init: float = np.pi
     pitch_init: float = 0.0
     yaw_init: float = 0.0
+
+    action_pos_scale: int = 1000
+    action_angle_scale: int = 100

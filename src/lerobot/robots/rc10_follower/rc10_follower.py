@@ -118,15 +118,15 @@ class RC10Follower(Robot):
     
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
-        if not self._checkPos(self.tcp[2] + action["z.delta"]):
+        if not self._checkPos(self.tcp[2] + action["z.delta"]/self.config.action_pos_scale):
             action["z.delta"] = 0.0
 
-        self.tcp[0] += action["x.delta"],
-        self.tcp[1] += action["y.delta"],
-        self.tcp[2] += action["z.delta"],
-        self.tcp[3] += action["roll.delta"],
-        self.tcp[4] += action["pitch.delta"],
-        self.tcp[5] += action["yaw.delta"],
+        self.tcp[0] += action["x.delta"]/self.config.action_pos_scale,
+        self.tcp[1] += action["y.delta"]/self.config.action_pos_scale,
+        self.tcp[2] += action["z.delta"]/self.config.action_pos_scale,
+        self.tcp[3] += action["roll.delta"]/self.config.action_angle_scale,
+        self.tcp[4] += action["pitch.delta"]/self.config.action_angle_scale,
+        self.tcp[5] += action["yaw.delta"]/self.config.action_angle_scale,
 
         self._controller.set_target(*self.tcp)
         self._gripper.send(action["gripper.pos"])
@@ -254,15 +254,15 @@ class RC10FollowerCut(Robot):
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
 
-        if not self._checkPos(self.tcp[2] + action["z.delta"]):
+        if not self._checkPos(self.tcp[2] + action["z.delta"]/self.config.action_pos_scale):
             action["z.delta"] = 0.0
 
         print(action)
 
-        self.tcp[0] += action["x.delta"],
-        self.tcp[1] += action["y.delta"],
-        self.tcp[2] += action["z.delta"],
-        self.tcp[5] += action["yaw.delta"],
+        self.tcp[0] += action["x.delta"]/self.config.action_pos_scale,
+        self.tcp[1] += action["y.delta"]/self.config.action_pos_scale,
+        self.tcp[2] += action["z.delta"]/self.config.action_pos_scale,
+        self.tcp[5] += action["yaw.delta"]/self.config.action_angle_scale,
 
         self._controller.set_target(*self.tcp)
         self._gripper.send(action["gripper.pos"])

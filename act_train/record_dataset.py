@@ -35,7 +35,9 @@ robot_config = RC10FollowerConfig(
 
     },
     resolution=(224,224),
-    limits = ((-0.5, 0.5), (-0.5, 0.5), (0.22, 0.5))
+    limits = ((-0.5, 0.5), (-0.5, 0.5), (0.22, 0.5)),
+    action_pos_scale=1000,
+    action_angle_scale=100
 )
 
 teleop_config = SpaceMouseTeleopConfig(
@@ -52,6 +54,8 @@ teleop_config = SpaceMouseTeleopConfig(
     roll_init=np.pi,
     pitch_init=0.0,
     yaw_init=0.0,
+    action_pos_scale=1000,
+    action_angle_scale=100
 )
 
 # Initialize the robot and teleoperator
