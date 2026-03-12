@@ -69,6 +69,7 @@ class PS4JoystickTeleop(Teleoperator):
     def get_action(self) -> RobotAction:
         x, y, z, roll, pitch, yaw = self._ps4_joystick.get_joystick()
         gripper = self._ps4_joystick.get_gripper_state()
+
         return {
             "x.pos": float(x),
             "y.pos": float(y),
