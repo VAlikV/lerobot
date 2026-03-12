@@ -19,10 +19,10 @@ class PS4JoystickTeleop(Teleoperator):
     @property
     def action_features(self) -> dict:
         return {
-            "x.delta": float,
-            "y.delta": float,
-            "z.delta": float,
-            "yaw.delta": float,
+            "x.pos": float,
+            "y.pos": float,
+            "z.pos": float,
+            "yaw.pos": float,
             "gripper.pos": float,
         }
 
@@ -34,6 +34,10 @@ class PS4JoystickTeleop(Teleoperator):
     def is_connected(self) -> bool:
         return self._ps4_joystick is not None
     
+    @property
+    def is_calibrated(self) -> bool:
+        return True
+
     def calibrate(self) -> None:
         pass
 
@@ -55,19 +59,21 @@ class PS4JoystickTeleop(Teleoperator):
             x_init=self.config.x_init,
             y_init=self.config.y_init,
             z_init=self.config.z_init,
+            roll_init=self.config.roll_init,
+            pitch_init=self.config.pitch_init,
             yaw_init=self.config.yaw_init,
         )
         logger.info(f"{self} connected")
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
-        x, y, z, roll, pitch, yaw = self._ps4_joystick.get_delta()
+        x, y, z, roll, pitch, yaw = self._ps4_joystick.get_joystick()
         gripper = self._ps4_joystick.get_gripper_state()
         return {
-            "x.delta": float(x)*self.config.action_pos_scale,
-            "y.delta": float(y)*self.config.action_pos_scale,
-            "z.delta": float(z)*self.config.action_pos_scale,
-            "yaw.delta": float(yaw)*self.config.action_angle_scale,
+            "x.pos": float(x),
+            "y.pos": float(y),
+            "z.pos": float(z),
+            "yaw.pos": float(yaw),
             "gripper.pos": float(gripper),
         }
     

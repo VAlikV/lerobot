@@ -18,7 +18,7 @@ class RC10FollowerConfig(RobotConfig):
     gripper_baudrate: int = 115200
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     resolution: tuple = (224, 224)
-    limits: tuple = ((-0.1, 0.1), (-0.1, 0.1), (0.0, 0.1))
+    limits: tuple = ((-0.1, 0.1), (-0.1, 0.1), (0.23, 0.1))
 
     action_pos_scale: int = 1000
     action_angle_scale: int = 100

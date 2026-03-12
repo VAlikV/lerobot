@@ -11,10 +11,9 @@ class PS4JoystickTeleopConfig(TeleoperatorConfig):
     deadzone: float = 0.05
     alpha: float = 0.3
     poll_rate: int = 100
-    x_init: float = 0.5
-    y_init: float = 0.5
-    z_init: float = 0.5
+    x_init: float = 0.095
+    y_init: float = 0.35
+    z_init: float = 0.23
+    roll_init: float = np.pi
+    pitch_init: float = 0.0
     yaw_init: float = 0.0
-
-    action_pos_scale: int = 1000
-    action_angle_scale: int = 100

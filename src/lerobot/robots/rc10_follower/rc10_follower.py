@@ -7,6 +7,7 @@ from lerobot.processor import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
 import cv2
+import numpy as np
 
 from ..robot import Robot
 from .config_rc10_follower import RC10FollowerConfig
@@ -179,12 +180,12 @@ class RC10FollowerCut(Robot):
     @cached_property
     def action_features(self) -> dict:
         return {
-            "x.delta": float,
-            "y.delta": float,
-            "z.delta": float,
+            "x.pos": float,
+            "y.pos": float,
+            "z.pos": float,
             # "roll.delta": float,
             # "pitch.delta": float,
-            "yaw.delta": float,
+            "yaw.pos": float,
             "gripper.pos": float,
         }
     
@@ -254,17 +255,18 @@ class RC10FollowerCut(Robot):
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
 
-        if not self._checkPos(self.tcp[2] + action["z.delta"]/self.config.action_pos_scale):
-            action["z.delta"] = 0.0
+        if not self._checkPos(action["z.pos"]):
+            action["z.pos"] = self.tcp[2]
 
         print(action)
 
-        self.tcp[0] += action["x.delta"]/self.config.action_pos_scale,
-        self.tcp[1] += action["y.delta"]/self.config.action_pos_scale,
-        self.tcp[2] += action["z.delta"]/self.config.action_pos_scale,
-        self.tcp[5] += action["yaw.delta"]/self.config.action_angle_scale,
-
-        self._controller.set_target(*self.tcp)
+        self._controller.set_target(
+            action["x.pos"],
+            action["y.pos"],
+            action["z.pos"],
+            np.pi,
+            0.0,
+            action["yaw.pos"],            )
         self._gripper.send(action["gripper.pos"])
         return action
 
