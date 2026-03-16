@@ -12,10 +12,10 @@ from lerobot.processor import make_default_processors
 
 import numpy as np
 
-NUM_EPISODES = 50
+NUM_EPISODES = 60
 FPS = 30
 EPISODE_TIME_SEC = 30
-RESET_TIME_SEC = 15
+RESET_TIME_SEC = 10
 TASK_DESCRIPTION = "My task description"
 
 # Create robot configuration
@@ -30,26 +30,27 @@ robot_config = RC10FollowerConfig(
     gripper_port="/dev/ttyUSB0",
     gripper_baudrate=115200,
     cameras={
-        "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
-        "side": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS)
+        "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
+        "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS),
+        "gripper": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=FPS),
 
     },
     resolution=(224,224),
-    limits = ((-0.5, 0.5), (-0.5, 0.5), (0.22, 0.5)),
+    limits = ((-0.5, 0.5), (-0.5, 0.5), (0.21, 0.5)),
     action_pos_scale=1000,
     action_angle_scale=100
 )
 
 teleop_config = PS4JoystickTeleopConfig(
     id="my_teleop_ps4_joystick",
-    max_speed=0.15,
-    max_rot_speed=1.2,
-    deadzone=200.0,
+    max_speed=0.05,
+    max_rot_speed=0.5,
+    deadzone=0.05,
     alpha=0.3,
     poll_rate=100,
-    x_init=0.5,
-    y_init=0.5,
-    z_init=0.5,
+    x_init=0.095,
+    y_init=0.35,
+    z_init=0.22,
     roll_init=np.pi,
     pitch_init=0.0,
     yaw_init=0.0
@@ -66,12 +67,12 @@ dataset_features = {**action_features, **obs_features}
 
 # Create the dataset
 dataset = LeRobotDataset.create(
-    repo_id="local/ACT_RC10_50eps3",
+    repo_id="local/ACT_RC10_60eps_pcb",
     fps=FPS,
     features=dataset_features,
     robot_type=robot.name,
     use_videos=True,
-    # video_backend="libx264",
+    video_backend="libx264",
     image_writer_threads=4,
 )
 

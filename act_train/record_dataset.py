@@ -14,8 +14,8 @@ import numpy as np
 
 NUM_EPISODES = 50
 FPS = 30
-EPISODE_TIME_SEC = 30
-RESET_TIME_SEC = 15
+EPISODE_TIME_SEC = 40
+RESET_TIME_SEC = 10
 TASK_DESCRIPTION = "My task description"
 
 # Create robot configuration
@@ -31,7 +31,8 @@ robot_config = RC10FollowerConfig(
     gripper_baudrate=115200,
     cameras={
         "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
-        "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS)
+        "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS),
+        "gripper": OpenCVCameraConfig(index_or_path=9, width=640, height=480, fps=FPS),
 
     },
     resolution=(224,224),
@@ -69,7 +70,7 @@ dataset_features = {**action_features, **obs_features}
 
 # Create the dataset
 dataset = LeRobotDataset.create(
-    repo_id="local/ACT_RC10_50eps",
+    repo_id="local/ACT_RC10_50eps2",
     fps=FPS,
     features=dataset_features,
     robot_type=robot.name,

@@ -9,22 +9,24 @@ from lerobot.robots.rc10_follower import RC10FollowerCut, RC10FollowerConfig
 from lerobot.teleoperators.space_mouse import SpaceMouseTeleopConfig
 from lerobot.teleoperators.space_mouse import SpaceMouseTeleopCut
 import numpy as np
+import matplotlib.pyplot as plt
 
 FPS = 30
 
 MAX_EPISODES = 5
-MAX_STEPS_PER_EPISODE = 1000
+MAX_STEPS_PER_EPISODE = 10000
 
 
 def main():
     device = torch.device("cuda")  # or "cuda" or "cpu"
-    model_id = "outputs/robot_learning_tutorial/act"
+    model_id = "outputs/robot_learning_tutorial/act/last"
     model = ACTPolicy.from_pretrained(model_id)
 
-    dataset_id = "local/ACT_RC10_50eps"
+    dataset_id = "local/ACT_RC10_60eps_pcb"
     # This only downloads the metadata for the dataset, ~10s of MB even for large-scale datasets
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)
-    preprocess, postprocess = make_pre_post_processors(model.config, dataset_stats=dataset_metadata.stats)
+    # preprocess, postprocess = make_pre_post_processors(model.config, dataset_stats=dataset_metadata.stats)
+    preprocess, postprocess = make_pre_post_processors(model.config, pretrained_path=model_id, dataset_stats=dataset_metadata.stats)
 
     # Create robot configuration
     robot_config = RC10FollowerConfig(
@@ -39,34 +41,24 @@ def main():
         gripper_baudrate=115200,
         cameras={
             "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
-            "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS)
+            "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS),
+            "gripper": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=FPS)
 
         },
         resolution=(224,224),
-        limits = ((-0.5, 0.5), (-0.5, 0.5), (0.22, 0.5))
-    )
-
-    teleop_config = SpaceMouseTeleopConfig(
-        id="my_teleop_space_mouse",
-        max_speed=0.15,
-        max_rot_speed=1.2,
-        deadzone=200.0,
-        alpha=0.3,
-        poll_rate=100,
-        device_num=0,
-        x_init=0.5,
-        y_init=0.5,
-        z_init=0.5,
-        roll_init=np.pi,
-        pitch_init=0.0,
-        yaw_init=0.0,
+        limits = ((-0.5, 0.5), (-0.5, 0.5), (0.21, 0.5)),
+        action_pos_scale=1000,
+        action_angle_scale=100
     )
 
     # Initialize the robot and teleoperator
     robot = RC10FollowerCut(robot_config)
-    teleop = SpaceMouseTeleopCut(teleop_config)
-
     robot.connect()
+
+    # plt.ion()  # интерактивный режим
+
+    fig, ax = plt.subplots()
+    img = ax.imshow(np.zeros((224,224,3)))
 
     for _ in range(MAX_EPISODES):
         for _ in range(MAX_STEPS_PER_EPISODE):
@@ -76,6 +68,13 @@ def main():
             )
 
             obs = preprocess(obs_frame)
+
+            # print(obs_frame)
+
+            # img.set_data(obs['observation.images.front'].cpu().numpy()[0].transpose((1,2,0)))
+            # img.set_data(obs_frame['observation.images.front'].cpu().numpy()[0].transpose((1,2,0)))
+            # plt.pause(0.01)  # ~30 FPS
+
 
             action = model.select_action(obs)
             action = postprocess(action)

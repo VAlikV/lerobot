@@ -28,7 +28,7 @@ def main():
     # Select your device
     device = torch.device("cuda")  # or "cuda" or "cpu"
 
-    dataset_id = "local/ACT_RC10_50eps"
+    dataset_id = "local/ACT_RC10_60eps_pcb"
 
     # This specifies the inputs the model will be expecting and the outputs it will produce
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)

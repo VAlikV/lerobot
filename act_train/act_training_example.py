@@ -26,7 +26,7 @@ def main():
     # Select your device
     device = torch.device("cuda")  # or "cuda" or "cpu"
 
-    dataset_id = "local/ACT_RC10_50eps"
+    dataset_id = "local/ACT_RC10_60eps_pcb"
 
     # This specifies the inputs the model will be expecting and the outputs it will produce
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)
@@ -70,8 +70,8 @@ def main():
     )
 
     # Number of training steps and logging frequency
-    training_steps = 5000
-    log_freq = 1
+    training_steps = 50000
+    log_freq = 100
 
     # Run training loop
     step = 0
@@ -87,11 +87,23 @@ def main():
             if step % log_freq == 0:
                 print(f"step: {step} loss: {loss.item():.3f}")
             step += 1
+
+            if step % 10000 == 0:
+                output_directory = Path("outputs/robot_learning_tutorial/act/"+str(step))
+                output_directory.mkdir(parents=True, exist_ok=True)
+                policy.save_pretrained(output_directory)
+                preprocessor.save_pretrained(output_directory)
+                postprocessor.save_pretrained(output_directory)
+
             if step >= training_steps:
                 done = True
                 break
 
     # Save the policy checkpoint, alongside the pre/post processors
+
+    output_directory = Path("outputs/robot_learning_tutorial/act/last")
+    output_directory.mkdir(parents=True, exist_ok=True)
+
     policy.save_pretrained(output_directory)
     preprocessor.save_pretrained(output_directory)
     postprocessor.save_pretrained(output_directory)
