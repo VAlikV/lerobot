@@ -10,7 +10,6 @@ accumulates them into the TCP target, clips to ee_bounds, and sends to the contr
 """
 
 import logging
-import time
 from dataclasses import dataclass, field
 from typing import Any
 

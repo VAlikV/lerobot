@@ -144,7 +144,7 @@ class RC10Follower(Robot):
                 cam.disconnect()
         logger.info(f"{self} disconnected.")
 
-    def _checkPos(self, position):
+    def _checkPos(self, position):  # noqa: N802
         return position > self.config.limits[2][0]
 
 # ==============================================================================
@@ -283,4 +283,3 @@ class RC10FollowerCut(Robot):
 
     def _checkPos(self, position):  # noqa: N802
         return position > self.config.limits[2][0]
-
