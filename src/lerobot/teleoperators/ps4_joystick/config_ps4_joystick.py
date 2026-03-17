@@ -1,7 +1,9 @@
-import numpy as np
 from dataclasses import dataclass
 
+import numpy as np
+
 from ..config import TeleoperatorConfig
+
 
 @TeleoperatorConfig.register_subclass("ps4_joystick")
 @dataclass
@@ -17,3 +19,6 @@ class PS4JoystickTeleopConfig(TeleoperatorConfig):
     roll_init: float = np.pi
     pitch_init: float = 0.0
     yaw_init: float = 0.0
+
+    # For HIL-SERL mode: get_action() should return normalized [-1, 1] stick deltas instead of absolute pos. Also enables get_teleop_events()
+    delta_mode: bool = False

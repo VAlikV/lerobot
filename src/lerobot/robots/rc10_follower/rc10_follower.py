@@ -1,13 +1,12 @@
 import logging
-
 from functools import cached_property
-
-from lerobot.cameras import make_cameras_from_configs
-from lerobot.processor import RobotAction, RobotObservation
-from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
 import cv2
 import numpy as np
+
+from lerobot.cameras import make_cameras_from_configs
+from lerobot.processor import RobotAction, RobotObservation
+from lerobot.utils.decorators import check_if_not_connected
 
 from ..robot import Robot
 from .config_rc10_follower import RC10FollowerConfig
@@ -41,7 +40,7 @@ class RC10Follower(Robot):
             # cam_cfg = self.config.cameras[cam_name]
             features[cam_name] = (self.config.resolution[0], self.config.resolution[1], 3)
         return features
-    
+
     @cached_property
     def action_features(self) -> dict:
         return {
@@ -53,27 +52,27 @@ class RC10Follower(Robot):
             "yaw.delta": float,
             "gripper.pos": float,
         }
-    
+
     @property
     def is_connected(self) -> bool:
         return self._controller is not None and all(
             cam.is_connected for cam in self.cameras.values()
         )
-    
+
     @property
     def is_calibrated(self) -> bool:
         return True
-    
+
     def calibrate(self) -> None:
         pass
-    
+
     def configure(self) -> None:
         pass
 
     def connect(self, calibrate: bool = True) -> None:
         if self.is_connected:
             raise RuntimeError("RC10Follower is already connected.")
-        
+
         from rc10_api.controller import TaskSpaceJogController
         from rc10_api.gripper import Gripper
 
@@ -86,7 +85,7 @@ class RC10Follower(Robot):
             treshold_angel=self.config.threshold_angle,
         )
         self._controller.start()
-        
+
         self._gripper = Gripper(
             device=self.config.gripper_port,
             baudrate=self.config.gripper_baudrate,
@@ -116,7 +115,7 @@ class RC10Follower(Robot):
             image = cv2.resize(image, self.config.resolution)
             obs[cam_name] = image
         return obs
-    
+
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
         if not self._checkPos(self.tcp[2] + action["z.delta"]/self.config.action_pos_scale):
@@ -176,7 +175,7 @@ class RC10FollowerCut(Robot):
             # cam_cfg = self.config.cameras[cam_name]
             features[cam_name] = (self.config.resolution[0], self.config.resolution[1], 3)
         return features
-    
+
     @cached_property
     def action_features(self) -> dict:
         return {
@@ -188,27 +187,27 @@ class RC10FollowerCut(Robot):
             "yaw.pos": float,
             "gripper.pos": float,
         }
-    
+
     @property
     def is_connected(self) -> bool:
         return self._controller is not None and all(
             cam.is_connected for cam in self.cameras.values()
         )
-    
+
     @property
     def is_calibrated(self) -> bool:
         return True
-    
+
     def calibrate(self) -> None:
         pass
-    
+
     def configure(self) -> None:
         pass
 
     def connect(self, calibrate: bool = True) -> None:
         if self.is_connected:
             raise RuntimeError("RC10Follower is already connected.")
-        
+
         from rc10_api.controller import TaskSpaceJogController
         from rc10_api.gripper import Gripper
 
@@ -221,7 +220,7 @@ class RC10FollowerCut(Robot):
             treshold_angel=self.config.threshold_angle,
         )
         self._controller.start()
-        
+
         self._gripper = Gripper(
             device=self.config.gripper_port,
             baudrate=self.config.gripper_baudrate,
@@ -251,7 +250,7 @@ class RC10FollowerCut(Robot):
             image = cv2.resize(image, self.config.resolution)
             obs[cam_name] = image
         return obs
-    
+
     @check_if_not_connected
     def send_action(self, action: RobotAction) -> RobotAction:
 
@@ -282,7 +281,6 @@ class RC10FollowerCut(Robot):
                 cam.disconnect()
         logger.info(f"{self} disconnected.")
 
-    def _checkPos(self, position):
+    def _checkPos(self, position):  # noqa: N802
         return position > self.config.limits[2][0]
 
-    
