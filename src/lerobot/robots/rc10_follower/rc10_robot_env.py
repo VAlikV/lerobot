@@ -74,7 +74,7 @@ class RC10RobotEnv(gym.Env):
 
         self._setup_spaces()
 
-    def _setup_spaces(self):
+    def _setup_spaces(self) -> None:
         """Configure observation and action spaces"""
         obs = self._get_observation()
 
@@ -117,7 +117,6 @@ class RC10RobotEnv(gym.Env):
         images = {}
         for cam_name, cam in self.robot.cameras.items():
             image = cam.async_read()
-            image = cv2.resize(image, self.robot.config.resolution)
             images[cam_name] = image
 
         return {"agent_pos": agent_pos, "pixels": images}
@@ -189,7 +188,11 @@ class RC10RobotEnv(gym.Env):
 
         self.current_step += 1
 
-        return obs, 0.0, False, False, {TeleopEvents.IS_INTERVENTION: False}
+        reward = 0.0
+        terminated = False
+        truncated = False
+
+        return obs, reward, terminated, truncated, {TeleopEvents.IS_INTERVENTION: False}
 
     def _render(self, obs: RobotObservation) -> None:
         """Display camera feeds"""
