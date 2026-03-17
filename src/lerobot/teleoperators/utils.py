@@ -63,11 +63,16 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> "Teleoperator":
         from .gamepad.teleop_gamepad import GamepadTeleop
 
         return GamepadTeleop(config)
-    
+
     elif config.type == "space_mouse":
         from .space_mouse.teleop_space_mouse import SpaceMouseTeleop
 
         return SpaceMouseTeleop(config)
+
+    elif config.type == "ps4_joystick":
+        from .ps4_joystick.teleop_ps4_joystick import PS4JoystickTeleop
+
+        return PS4JoystickTeleop(config)
 
     elif config.type == "keyboard_ee":
         from .keyboard.teleop_keyboard import KeyboardEndEffectorTeleop
