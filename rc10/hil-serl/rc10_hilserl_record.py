@@ -25,12 +25,9 @@ TASK_DESCRIPTION = "pick_and_place"
 REPO_ID = "local/rc10_hilserl_demos"
 IMAGE_SIZE = (128, 128)
 
-
-# We need to get these crop parameters using src/lerobot/rl/crop_dataset_roi.py script
-IMAGE_CROP = {
-    # "front": (top, left, height, width)
-    # "side": (top, left, height, width)
-}
+# we will not need the crop params during recording, keep the full images,
+# because if we want to change the crop params later then we might have to record the dataset again
+IMAGE_CROP = {}
 
 robot_config = RC10FollowerConfig(
     id="my_rc10_follower",
@@ -152,9 +149,9 @@ def main():
             state = torch.from_numpy(obs["agent_pos"]).float()
             images = {}
             for cam_name, image in obs["pixels"].items():
-                if cam_name in IMAGE_CROP:
-                    top, left, height, width = IMAGE_CROP[cam_name]
-                    image = image[top:top + height, left:left + width]
+                # if cam_name in IMAGE_CROP:
+                #     top, left, height, width = IMAGE_CROP[cam_name]
+                #     image = image[top:top + height, left:left + width]
                 resized = cv2.resize(image, IMAGE_SIZE)
                 images[f"{OBS_IMAGES}.{cam_name}"] = torch.from_numpy(resized).float().permute(2, 0, 1) / 255.0
 
