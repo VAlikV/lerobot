@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 FPS = 30
 NUM_EPISODES = 20
 EPISODE_TIME_S = 30.0
-RESET_TIME_S = 5.0
+RESET_TIME_S = 7.0
 TASK_DESCRIPTION = "pick_and_place"
 REPO_ID = "local/rc10_hilserl_demos"
 IMAGE_SIZE = (128, 128)
@@ -40,9 +40,9 @@ robot_config = RC10FollowerConfig(
     gripper_port="/dev/ttyUSB0",
     gripper_baudrate=115200,
     cameras={
-        "front": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
-        "side": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS),
-        "gripper": OpenCVCameraConfig(index_or_path=6, width=640, height=480, fps=FPS),
+        "front": OpenCVCameraConfig(index_or_path=0, width=640, height=480, fps=FPS),
+        "side": OpenCVCameraConfig(index_or_path=2, width=640, height=480, fps=FPS),
+        "gripper": OpenCVCameraConfig(index_or_path=4, width=640, height=480, fps=FPS),
 
     },
     resolution=(128,128),
@@ -65,7 +65,7 @@ teleop_config = PS4JoystickTeleopConfig(
 )
 
 env_config = RC10EnvConfig(
-    ee_step_sizes={"x": 0.002, "y": 0.002, "z": 0.002, "yaw": 0.05},
+    ee_step_sizes={"x": 0.002, "y": 0.002, "z": 0.002, "yaw": 0.02},
     ee_bounds={
         "min": [-0.0771, 0.2554, 0.2296],   #obtain these using the rc10/rc10_find_ee_limits.py file
         "max": [0.2836, 0.6417, 0.4079],
@@ -115,18 +115,18 @@ def main():
         image_writer_threads=4,
         )
 
-    logging.info("=" * 50)
-    logging.info(f"    Recording {NUM_EPISODES} episodes at {FPS} FPS")
-    logging.info(f"    TASK: {TASK_DESCRIPTION}")
-    logging.info()
-    logging.info(" Hold R1 to control robot")
-    logging.info(" Trinagle=Success, Circle=Fail, Square=REDO, Cross=GripperToggle")
-    logging.info("=" * 50)
+    print("=" * 50)
+    print(f"    Recording {NUM_EPISODES} episodes at {FPS} FPS")
+    print(f"    TASK: {TASK_DESCRIPTION}")
+    print("\n")
+    print(" Hold R1 to control robot")
+    print(" Trinagle=Success, Circle=Fail, Square=REDO, Cross=GripperToggle")
+    print("=" * 50)
 
     episode_idx = 0
     while episode_idx < NUM_EPISODES:
         obs, _ = env.reset()
-        logging.info(f"Episode {episode_idx + 1}/{NUM_EPISODES} - lets go!")
+        print(f"Episode {episode_idx + 1}/{NUM_EPISODES} - lets go!")
 
         for step in range(max_steps):
             step_start = time.perf_counter()
@@ -171,13 +171,13 @@ def main():
             obs = next_obs
 
             if rerecord:
-                logging.info("Re-recording episode...")
+                print("Re-recording episode...")
                 dataset.clear_episode_buffer()
                 break
 
             if done:
                 status = "SUCCESS" if success else ("TIMEOUT" if step >= max_steps -1 else "TERMINATED")
-                logging.info(f"Episode {episode_idx + 1} - {status} ({step + 1} steps)")
+                print(f"Episode {episode_idx + 1} - {status} ({step + 1} steps)")
                 dataset.save_episode()
                 episode_idx += 1
                 break
@@ -186,7 +186,7 @@ def main():
             time.sleep(max(dt - elapsed, 0.0))
 
     dataset.finalize()
-    logging.info(f"Dataset saved at {REPO_ID}")
+    print(f"Dataset saved at {REPO_ID}")
 
     env.close()
     teleop.disconnect()

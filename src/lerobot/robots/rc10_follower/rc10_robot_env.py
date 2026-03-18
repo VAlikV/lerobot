@@ -33,7 +33,7 @@ class RC10EnvConfig:
         "x": 0.002, # meter per step
         "y": 0.002,
         "z": 0.002,
-        "yaw": 0.05,    #radians per step
+        "yaw": 0.02,    #radians per step
     })
 
     ee_bounds: dict[str, list[float]] = field(default_factory=lambda: {
@@ -128,12 +128,18 @@ class RC10RobotEnv(gym.Env):
 
         if self.env_config.reset_tcp is not None:
             logger.info("resetting RC10 to intial tcp position...")
+            # print("hello from reset")
             reset_pose = self.env_config.reset_tcp
+            self.robot._controller.set_target(
+                reset_pose[0], reset_pose[1], reset_pose[2] + 0.05,
+                reset_pose[3], reset_pose[4], reset_pose[5],
+            )
+            precise_sleep(self.env_config.reset_time_s/2)
             self.robot._controller.set_target(
                 reset_pose[0], reset_pose[1], reset_pose[2],
                 reset_pose[3], reset_pose[4], reset_pose[5],
             )
-            precise_sleep(self.env_config.reset_time_s)
+            precise_sleep(self.env_config.reset_time_s/2)
             # update internal tcp state to match the reset position
             self.tcp = list(self.robot._controller.get_current_tcp())
         else:
