@@ -48,6 +48,9 @@ PRETRAIN_STEPS = 5000
 PRETRAIN_BATCH_SIZE = 256
 PRETRAIN_DATASET_REPO_ID = "local/rc10_hilserl_demos"
 
+# LOAD_CHECKPOINT = None
+LOAD_CHECKPOINT = "outputs/rc10_hilserl/checkpoint_5000"
+
 # We need to get these crop parameters using src/lerobot/rl/crop_dataset_roi.py script
 IMAGE_CROP = {
     # "front": (51, 3, 71, 121),
@@ -376,9 +379,19 @@ def run_learner(
     """Train SAC policy on transitions streamed from the Actor.
     Trains CONTINUOUSLY on buffer data — does not block waiting for new transitions."""
 
-    policy = SACPolicy(policy_config)
-    policy.train()
-    policy.to(device=DEVICE)
+    if LOAD_CHECKPOINT is not None:
+        load_path = Path(LOAD_CHECKPOINT)
+        print(f"[Learner] Loading checkpoint from {load_path}...")
+
+        policy = SACPolicy.from_pretrained(load_path)
+        policy.train()
+        policy.to(device=DEVICE)
+
+        print("[Learner] Checkpoint loaded")
+    else:
+        policy = SACPolicy(policy_config)
+        policy.train()
+        policy.to(device=DEVICE)
 
     optim_params = policy.get_optim_params()
     optimizers = {
