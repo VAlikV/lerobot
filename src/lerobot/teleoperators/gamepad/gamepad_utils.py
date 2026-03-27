@@ -244,13 +244,13 @@ class GamepadController(InputController):
 
         for event in pygame.event.get():
             if event.type == pygame.JOYBUTTONDOWN:
-                if event.button == 3:
+                if event.button == 2:   # For ps4
                     self.episode_end_status = TeleopEvents.SUCCESS
                 # A button (1) for failure
                 elif event.button == 1:
                     self.episode_end_status = TeleopEvents.FAILURE
                 # X button (0) for rerecord
-                elif event.button == 0:
+                elif event.button == 4: # For ps4
                     self.episode_end_status = TeleopEvents.RERECORD_EPISODE
 
                 # RB button (6) for closing gripper
@@ -285,11 +285,11 @@ class GamepadController(InputController):
         try:
             # Read joystick axes
             # Left stick X and Y (typically axes 0 and 1)
-            y_input = self.joystick.get_axis(0)  # Up/Down (often inverted)
-            x_input = self.joystick.get_axis(1)  # Left/Right
+            y_input = self.joystick.get_axis(1)  # Up/Down (often inverted) # For ps4
+            x_input = self.joystick.get_axis(0)  # Left/Right   # For ps4
 
             # Right stick Y (typically axis 3 or 4)
-            z_input = self.joystick.get_axis(3)  # Up/Down for Z
+            z_input = self.joystick.get_axis(4)  # Up/Down for Z    # For ps4
 
             # Apply deadzone to avoid drift
             x_input = 0 if abs(x_input) < self.deadzone else x_input
@@ -297,10 +297,10 @@ class GamepadController(InputController):
             z_input = 0 if abs(z_input) < self.deadzone else z_input
 
             # Calculate deltas (note: may need to invert axes depending on controller)
-            delta_x = -x_input * self.x_step_size  # Forward/backward
+            delta_x = x_input * self.x_step_size  # Forward/backward    # For ps4
             delta_y = -y_input * self.y_step_size  # Left/right
             delta_z = -z_input * self.z_step_size  # Up/down
-
+            # print(delta_x, delta_y, delta_z)
             return delta_x, delta_y, delta_z
 
         except pygame.error:

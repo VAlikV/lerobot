@@ -57,6 +57,7 @@ from lerobot.robots import (  # noqa: F401
     make_robot_from_config,
     so_follower,
 )
+from lerobot.robots import rc10 as _rc10_register  # noqa: F401  # register RC10RobotConfig
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
@@ -79,7 +80,7 @@ from lerobot.utils.utils import log_say
 
 from .joint_observations_processor import JointVelocityProcessorStep, MotorCurrentProcessorStep
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, force=True)
 
 
 @dataclass
@@ -328,7 +329,42 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
 
         return env, None
 
-    # Real robot environment
+    # RC10 real robot environment (task-space jog controller)
+    if cfg.name == "rc10":
+        from lerobot.robots.rc10 import RC10Robot, RC10RobotEnv, RC10RobotEnvConfig
+
+        assert cfg.robot is not None, "Robot config must be provided for RC10 environment"
+        assert cfg.teleop is not None, "Teleop config must be provided for RC10 environment"
+
+        # cfg.robot is already parsed by draccus as an RC10RobotConfig instance
+        robot = RC10Robot(cfg.robot)
+        robot.connect()
+
+        # Build env config from processor settings
+        ik_cfg = cfg.processor.inverse_kinematics
+        reset_cfg = cfg.processor.reset
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+
+        home_tcp = list(reset_cfg.fixed_reset_joint_positions) if reset_cfg else [0.095, 0.35, 0.28, 3.14159, 0.0, 0.0]
+
+        env_config = RC10RobotEnvConfig(
+            ee_step_sizes=ik_cfg.end_effector_step_sizes if ik_cfg else {"x": 0.002, "y": 0.002, "z": 0.002},
+            ee_bounds_min=ik_cfg.end_effector_bounds["min"] if ik_cfg and ik_cfg.end_effector_bounds else [-0.0771, 0.2554, 0.2296],
+            ee_bounds_max=ik_cfg.end_effector_bounds["max"] if ik_cfg and ik_cfg.end_effector_bounds else [0.2836, 0.6417, 0.4079],
+            fixed_roll=home_tcp[3] if len(home_tcp) > 3 else 3.14159,
+            fixed_pitch=home_tcp[4] if len(home_tcp) > 4 else 0.0,
+            fixed_yaw=home_tcp[5] if len(home_tcp) > 5 else 0.0,
+            home_tcp=home_tcp,
+            reset_time_s=reset_cfg.reset_time_s if reset_cfg else 7.0,
+            use_gripper=use_gripper,
+        )
+        env = RC10RobotEnv(robot, env_config)
+
+        teleop_device = make_teleoperator_from_config(cfg.teleop)
+        teleop_device.connect()
+        return env, teleop_device
+
+    # Real robot environment (SO101 and other motor-bus robots)
     assert cfg.robot is not None, "Robot config must be provided for real robot environment"
     assert cfg.teleop is not None, "Teleop config must be provided for real robot environment"
 
@@ -386,6 +422,48 @@ def make_processors(
             AddBatchDimensionProcessorStep(),
             DeviceProcessorStep(device=device),
         ]
+
+        return DataProcessorPipeline(
+            steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
+        ), DataProcessorPipeline(
+            steps=action_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
+        )
+
+    if cfg.name == "rc10":
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+
+        # Action pipeline: teleop reads + intervention handling + tensor to numpy
+        action_pipeline_steps = [
+            AddTeleopActionAsComplimentaryDataStep(teleop_device=teleop_device),
+            AddTeleopEventsAsInfoStep(teleop_device=teleop_device),
+            InterventionActionProcessorStep(
+                use_gripper=use_gripper,
+                terminate_on_success=terminate_on_success,
+            ),
+            Torch2NumpyActionProcessorStep(),
+        ]
+
+        # Env pipeline: numpy to torch action + observation processing + optional image crop/resize + time limit + batch + device
+        env_pipeline_steps = [
+            Numpy2TorchActionProcessorStep(),
+            VanillaObservationProcessorStep(),
+        ]
+
+        if cfg.processor.image_preprocessing is not None:
+            env_pipeline_steps.append(
+                ImageCropResizeProcessorStep(
+                    crop_params_dict=cfg.processor.image_preprocessing.crop_params_dict,
+                    resize_size=cfg.processor.image_preprocessing.resize_size,
+                )
+            )
+
+        if cfg.processor.reset is not None:
+            env_pipeline_steps.append(
+                TimeLimitProcessorStep(max_episode_steps=int(cfg.processor.reset.control_time_s * cfg.fps))
+            )
+
+        env_pipeline_steps.append(AddBatchDimensionProcessorStep())
+        env_pipeline_steps.append(DeviceProcessorStep(device=device))
 
         return DataProcessorPipeline(
             steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
@@ -660,12 +738,13 @@ def control_loop(
     episode_start_time = time.perf_counter()
 
     while episode_idx < cfg.dataset.num_episodes_to_record:
+        # print(f"Starting episode {episode_idx+1}/{cfg.dataset.num_episodes_to_record}...", end="\r", flush=True)
         step_start_time = time.perf_counter()
 
         # Create a neutral action (no movement)
         neutral_action = torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32)
         if use_gripper:
-            neutral_action = torch.cat([neutral_action, torch.tensor([0.0])])  # Gripper stay
+            neutral_action = torch.cat([neutral_action, torch.tensor([1.0])])  # Gripper stay (for RC10 1.0 is for stay instead of 0.0)
 
         # Use the new step function
         transition = step_env_and_process_transition(
@@ -733,11 +812,17 @@ def control_loop(
         # Maintain fps timing
         precise_sleep(max(dt - (time.perf_counter() - step_start_time), 0.0))
 
-    if dataset is not None and cfg.dataset.push_to_hub:
+    # Bug fix: we need to handle the saving and pushing to hub separately
+    if dataset is not None:
         logging.info("Finalizing dataset before pushing to hub")
         dataset.finalize()
+    if cfg.dataset.push_to_hub:
         logging.info("Pushing dataset to hub")
         dataset.push_to_hub()
+
+    # Bug fix: we need to close the env after the recording is complete
+    env.close()
+    logging.info("Recording complete")
 
 
 def replay_trajectory(

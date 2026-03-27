@@ -1,0 +1,63 @@
+{
+    "env": {
+        "name": "rc10",
+        "task": "pick_place_cube",
+        "fps": 10,
+        "robot": {
+            "type": "rc10",
+            "ip": "10.10.10.10",
+            "rate_hz": 100,
+            "velocity": 1.0,
+            "acceleration": 1.0,
+            "threshold_position": 0.001,
+            "threshold_angle": 1.0,
+            "gripper_port": "/dev/ttyUSB0",
+            "gripper_baudrate": 115200,
+            "cameras": {
+                "front": {"type": "opencv", "index_or_path": 0, "width": 640, "height": 480, "fps": 30},
+                "side": {"type": "opencv", "index_or_path": 2, "width": 640, "height": 480, "fps": 30},
+                "wrist": {"type": "opencv", "index_or_path": 4, "width": 640, "height": 480, "fps": 30}
+            }
+        },
+        "teleop": {
+            "type": "gamepad",
+            "use_gripper": true
+        },
+        "processor": {
+            "control_mode": "gamepad",
+            "gripper": {
+                "use_gripper": true,
+                "gripper_penalty": -0.02
+            },
+            "reset": {
+                "fixed_reset_joint_positions": [0.1, 0.445, 0.25, 3.14159, 0.0, 0.0],
+                "reset_time_s": 7.0,
+                "control_time_s": 15.0,
+                "terminate_on_success": true
+            },
+            "observation": {
+                "display_cameras": true
+            },
+            "image_preprocessing": {
+                "resize_size": [128, 128]
+            },
+            "inverse_kinematics": {
+                "end_effector_step_sizes": {"x": 0.01, "y": 0.01, "z": 0.01},
+                "end_effector_bounds": {
+                    "min": [0.0133, 0.4319, 0.225],
+                    "max": [0.1741, 0.5874, 0.275]
+                }
+            }
+        }
+    },
+
+
+    "dataset": {
+        "repo_id": "local/rc10_pick_place_cube_3_cams",
+        "task": "pick_place_cube",
+        "num_episodes_to_record": 20,
+        "push_to_hub": false
+    },
+    "mode": "record",
+    "device": "cpu"
+}
