@@ -80,6 +80,11 @@ class RC10RobotEnvConfig:
 
     use_gripper: bool = True
 
+    # Start-position randomization (metres). At each reset the home x,y,z are
+    # perturbed uniformly in [-rand, +rand]. Set to 0.0 to disable.
+    randomization_xy: float = 0.02   # 2 cm in x and y (matching paper)
+    randomization_z: float = 0.0     # no z randomization by default
+
 
 # ---------------------------------------------------------------------------
 # RC10 Robot
@@ -291,7 +296,25 @@ class RC10RobotEnv(gym.Env):
 
         logger.info("Resetting RC10 to home TCP pose …")
         self.robot.send_gripper(2)  # open gripper
-        home = self.config.home_tcp
+
+        home = list(self.config.home_tcp)  # copy so we don't mutate config
+
+        # Randomize start position (paper: 2cm in x,y)
+        rng = self.np_random  # seeded RNG from gym.Env
+        rand_xy = self.config.randomization_xy
+        rand_z = self.config.randomization_z
+        if rand_xy > 0:
+            home[0] += rng.uniform(-rand_xy, rand_xy)
+            home[1] += rng.uniform(-rand_xy, rand_xy)
+        if rand_z > 0:
+            home[2] += rng.uniform(-rand_z, rand_z)
+
+        # Clip to workspace bounds so randomization can't push outside
+        home[0] = np.clip(home[0], self.ee_min[0], self.ee_max[0])
+        home[1] = np.clip(home[1], self.ee_min[1], self.ee_max[1])
+        home[2] = np.clip(home[2], self.ee_min[2], self.ee_max[2])
+
+        logger.info(f"  Randomized start: x={home[0]:.4f}, y={home[1]:.4f}, z={home[2]:.4f}")
         self.robot.send_target(*home)
         precise_sleep(self.config.reset_time_s)
 

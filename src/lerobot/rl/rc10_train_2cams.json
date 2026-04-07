@@ -56,7 +56,8 @@
                 "fixed_reset_joint_positions": [0.1, 0.420, 0.27, 3.14159, 0.0, 0.0],
                 "reset_time_s": 7.0,
                 "control_time_s": 15.0,
-                "terminate_on_success": true
+                "terminate_on_success": true,
+                "randomization_xy": 0.02
             },
             "observation": {
                 "display_cameras": false

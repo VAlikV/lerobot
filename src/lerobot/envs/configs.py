@@ -225,6 +225,8 @@ class ResetConfig:
     reset_time_s: float = 5.0
     control_time_s: float = 20.0
     terminate_on_success: bool = True
+    randomization_xy: float = 0.0   # metres; uniform noise added to home x,y at each reset
+    randomization_z: float = 0.0    # metres; uniform noise added to home z at each reset
 
 
 @dataclass
