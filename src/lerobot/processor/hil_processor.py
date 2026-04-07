@@ -329,8 +329,19 @@ class GymHILAdapterProcessorStep(ProcessorStep):
         if TELEOP_ACTION_KEY in info:
             complementary_data[TELEOP_ACTION_KEY] = info[TELEOP_ACTION_KEY]
 
-        if "is_intervention" in info:
-            info[TeleopEvents.IS_INTERVENTION] = info["is_intervention"]
+        # Map gym_hil string keys to TeleopEvents enum keys so the
+        # downstream processor pipeline (InterventionActionProcessorStep)
+        # can find them.  gym_hil wrappers use plain strings; lerobot
+        # processors use TeleopEvents enum members as dict keys.
+        _STRING_TO_ENUM = {
+            "is_intervention": TeleopEvents.IS_INTERVENTION,
+            "rerecord_episode": TeleopEvents.RERECORD_EPISODE,
+            "success": TeleopEvents.SUCCESS,
+            "terminate_episode": TeleopEvents.TERMINATE_EPISODE,
+        }
+        for str_key, enum_key in _STRING_TO_ENUM.items():
+            if str_key in info:
+                info[enum_key] = info[str_key]
 
         transition[TransitionKey.INFO] = info
         transition[TransitionKey.COMPLEMENTARY_DATA] = complementary_data
