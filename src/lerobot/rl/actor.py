@@ -53,6 +53,7 @@ from functools import lru_cache
 from queue import Empty
 
 import grpc
+import numpy as np
 import torch
 from torch import nn
 from torch.multiprocessing import Event, Queue
@@ -302,6 +303,45 @@ def act_with_policy(
             env_processor=env_processor,
             action_processor=action_processor,
         )
+
+        # Display camera feeds if configured
+        display_cameras = (
+            cfg.env.processor.observation.display_cameras
+            if cfg.env.processor.observation is not None
+            else False
+        )
+        if display_cameras:
+            import matplotlib.pyplot as plt
+
+            obs_dict = new_transition.get(TransitionKey.OBSERVATION, {})
+            image_keys = sorted([k for k in obs_dict if "image" in k and isinstance(obs_dict[k], torch.Tensor)])
+
+            if image_keys and not hasattr(act_with_policy, "_cam_fig"):
+                plt.ion()
+                fig, axes = plt.subplots(1, len(image_keys), figsize=(4 * len(image_keys), 4))
+                if len(image_keys) == 1:
+                    axes = [axes]
+                img_plots = []
+                for ax, key in zip(axes, image_keys):
+                    img = obs_dict[key].squeeze(0).cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).clip(0, 255).astype(np.uint8)
+                    im = ax.imshow(img)
+                    ax.set_title(key.replace("observation.images.", ""))
+                    ax.axis("off")
+                    img_plots.append(im)
+                fig.tight_layout()
+                act_with_policy._cam_fig = fig
+                act_with_policy._cam_plots = img_plots
+                act_with_policy._cam_keys = image_keys
+                plt.show(block=False)
+                plt.pause(0.001)
+            elif image_keys and hasattr(act_with_policy, "_cam_fig"):
+                for im, key in zip(act_with_policy._cam_plots, act_with_policy._cam_keys):
+                    img = obs_dict[key].squeeze(0).cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).clip(0, 255).astype(np.uint8)
+                    im.set_data(img)
+                act_with_policy._cam_fig.canvas.draw_idle()
+                act_with_policy._cam_fig.canvas.flush_events()
 
         # Extract values from processed transition
         next_observation = {
