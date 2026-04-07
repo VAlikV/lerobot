@@ -1,0 +1,186 @@
+{
+    "output_dir": null,
+    "job_name": "panda_sim_usb_sac",
+    "resume": false,
+    "seed": 1000,
+    "num_workers": 4,
+    "batch_size": 64,
+    "steps": 100000,
+    "eval_freq": 20000,
+    "log_freq": 1,
+    "save_checkpoint": true,
+    "save_freq": 1000,
+    "use_policy_training_preset": true,
+    "optimizer": null,
+    "scheduler": null,
+    "wandb": {
+        "enable": false,
+        "project": "rc10_sim_usb",
+        "disable_artifact": true
+    },
+    "dataset": {
+        "repo_id": "local/panda_sim_usb_insertion_demos",
+        "use_imagenet_stats": false
+    },
+    "env": {
+        "type": "gym_manipulator",
+        "name": "gym_hil",
+        "task": "PandaUSBInsertionGamepad-v0",
+        "fps": 10,
+        "robot": null,
+        "teleop": null,
+        "processor": {
+            "control_mode": "gamepad",
+            "gripper": {
+                "use_gripper": true,
+                "gripper_penalty": -0.05
+            },
+            "observation": {
+                "display_cameras": true
+            },
+            "reset": {
+                "fixed_reset_joint_positions": [0.0, 0.195, 0.0, -2.43, 0.0, 2.62, 0.785],
+                "reset_time_s": 5.0,
+                "control_time_s": 20.0,
+                "terminate_on_success": true
+            }
+        },
+        "features": {
+            "observation.images.front": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist_back": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.state": {
+                "type": "STATE",
+                "shape": [18]
+            },
+            "action": {
+                "type": "ACTION",
+                "shape": [3]
+            }
+        },
+        "features_map": {
+            "observation.images.front": "observation.images.front",
+            "observation.images.wrist": "observation.images.wrist",
+            "observation.images.wrist_back": "observation.images.wrist_back",
+            "observation.state": "observation.state",
+            "action": "action"
+        }
+    },
+    "policy": {
+        "type": "sac",
+        "n_obs_steps": 1,
+        "normalization_mapping": {
+            "VISUAL": "MEAN_STD",
+            "STATE": "MIN_MAX",
+            "ENV": "MIN_MAX",
+            "ACTION": "MIN_MAX"
+        },
+        "input_features": {
+            "observation.images.front": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist_back": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.state": {
+                "type": "STATE",
+                "shape": [18]
+            }
+        },
+        "output_features": {
+            "action": {
+                "type": "ACTION",
+                "shape": [3]
+            }
+        },
+        "device": "cuda",
+        "use_amp": false,
+        "dataset_stats": {
+            "observation.images.front": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.images.wrist": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.images.wrist_back": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.state": {
+                "min": [-3.14, -1.77, -3.14, -3.14, -3.14, -0.02, -3.14, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, -2.0, 0.0, 0.1, -0.4, -0.1],
+                "max": [3.14, 1.77, 3.14, -0.07, 3.14, 3.76, 3.14, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 255.0, 0.7, 0.4, 0.6]
+            },
+            "action": {
+                "min": [-0.01, -0.01, -0.01],
+                "max": [0.01, 0.01, 0.01]
+            }
+        },
+        "repo_id": "local/panda_sim_usb_insertion",
+        "storage_device": "cpu",
+        "vision_encoder_name": "helper2424/resnet10",
+        "freeze_vision_encoder": true,
+        "image_encoder_hidden_dim": 32,
+        "shared_encoder": true,
+        "online_steps": 1000000,
+        "online_buffer_capacity": 100000,
+        "offline_buffer_capacity": 100000,
+        "online_step_before_learning": 100,
+        "policy_update_freq": 1,
+        "discount": 0.98,
+        "temperature_init": 0.01,
+        "num_critics": 2,
+        "num_subsample_critics": null,
+        "critic_lr": 0.0003,
+        "actor_lr": 0.0003,
+        "temperature_lr": 0.0003,
+        "critic_target_update_weight": 0.005,
+        "utd_ratio": 2,
+        "state_encoder_hidden_dim": 64,
+        "latent_dim": 256,
+        "target_entropy": null,
+        "use_backup_entropy": true,
+        "grad_clip_norm": 10.0,
+        "num_discrete_actions": 3,
+        "critic_network_kwargs": {
+            "hidden_dims": [256, 256],
+            "activate_final": true,
+            "final_activation": null
+        },
+        "actor_network_kwargs": {
+            "hidden_dims": [256, 256],
+            "activate_final": true
+        },
+        "policy_kwargs": {
+            "use_tanh_squash": true,
+            "std_min": 1e-5,
+            "std_max": 5,
+            "init_final": 0.05
+        },
+        "actor_learner_config": {
+            "learner_host": "127.0.0.1",
+            "learner_port": 50051,
+            "policy_parameters_push_frequency": 4
+        },
+        "concurrency": {
+            "actor": "threads",
+            "learner": "threads"
+        }
+    }
+}

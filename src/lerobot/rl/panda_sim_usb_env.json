@@ -1,0 +1,35 @@
+{
+    "env": {
+        "name": "gym_hil",
+        "task": "PandaUSBInsertionGamepad-v0",
+        "fps": 10,
+        "robot": null,
+        "teleop": null,
+        "processor": {
+            "control_mode": "gamepad",
+            "gripper": {
+                "use_gripper": true,
+                "gripper_penalty": -0.05
+            },
+            "observation": {
+                "display_cameras": true
+            },
+            "reset": {
+                "fixed_reset_joint_positions": [0.0, 0.195, 0.0, -2.43, 0.0, 2.62, 0.785],
+                "reset_time_s": 5.0,
+                "control_time_s": 20.0,
+                "terminate_on_success": true
+            }
+        }
+    },
+    "dataset": {
+        "repo_id": "local/panda_sim_usb_insertion_demos",
+        "root": null,
+        "task": "PandaUSBInsertionGamepad-v0",
+        "num_episodes_to_record": 20,
+        "replay_episode": 0,
+        "push_to_hub": false
+    },
+    "mode": "record",
+    "device": "cpu"
+}
