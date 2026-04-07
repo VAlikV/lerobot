@@ -357,6 +357,8 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             home_tcp=home_tcp,
             reset_time_s=reset_cfg.reset_time_s if reset_cfg else 7.0,
             use_gripper=use_gripper,
+            randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
+            randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
         )
         env = RC10RobotEnv(robot, env_config)
 
@@ -756,6 +758,48 @@ def control_loop(
         )
         terminated = transition.get(TransitionKey.DONE, False)
         truncated = transition.get(TransitionKey.TRUNCATED, False)
+
+        # Display camera feeds if available (shows what the policy sees)
+        display_cameras = (
+            cfg.env.processor.observation.display_cameras
+            if cfg.env.processor.observation is not None
+            else False
+        )
+        if display_cameras:
+            import matplotlib.pyplot as plt
+
+            obs_dict = transition.get(TransitionKey.OBSERVATION, {})
+            image_keys = sorted([k for k in obs_dict if "image" in k and isinstance(obs_dict[k], torch.Tensor)])
+
+            if image_keys and not hasattr(control_loop, "_cam_fig"):
+                # First call: create the figure and axes
+                plt.ion()
+                fig, axes = plt.subplots(1, len(image_keys), figsize=(4 * len(image_keys), 4))
+                if len(image_keys) == 1:
+                    axes = [axes]
+                img_plots = []
+                for ax, key in zip(axes, image_keys):
+                    img = obs_dict[key].squeeze(0).cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).clip(0, 255).astype(np.uint8)
+                    im = ax.imshow(img)
+                    ax.set_title(key.replace("observation.images.", ""))
+                    ax.axis("off")
+                    img_plots.append(im)
+                fig.tight_layout()
+                control_loop._cam_fig = fig
+                control_loop._cam_axes = axes
+                control_loop._cam_plots = img_plots
+                control_loop._cam_keys = image_keys
+                plt.show(block=False)
+                plt.pause(0.001)
+            elif image_keys and hasattr(control_loop, "_cam_fig"):
+                # Update existing plots
+                for im, key in zip(control_loop._cam_plots, control_loop._cam_keys):
+                    img = obs_dict[key].squeeze(0).cpu().permute(1, 2, 0).numpy()
+                    img = (img * 255).clip(0, 255).astype(np.uint8)
+                    im.set_data(img)
+                control_loop._cam_fig.canvas.draw_idle()
+                control_loop._cam_fig.canvas.flush_events()
 
         if cfg.mode == "record":
             observations = {
