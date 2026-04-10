@@ -175,14 +175,17 @@ N_COLOR_CHANNELS = 3
 # config
 @dataclass
 class GR00TN15Config(PretrainedConfig):
+    # bug here: dataclass has fields without a default value (backbone_cfg/action_head_cfg/action_horizon) 
+    # placed after fields with default values, which doesnt work with python3.12.13
+    # for now adding deafault=None to these
     model_type = "gr00t_n1_5"
-    backbone_cfg: dict = field(init=False, metadata={"help": "Backbone configuration."})
+    backbone_cfg: dict = field(default=None, init=False, metadata={"help": "Backbone configuration."})
 
-    action_head_cfg: dict = field(init=False, metadata={"help": "Action head configuration."})
+    action_head_cfg: dict = field(default=None, init=False, metadata={"help": "Action head configuration."})
 
-    action_horizon: int = field(init=False, metadata={"help": "Action horizon."})
+    action_horizon: int = field(default=None, init=False, metadata={"help": "Action horizon."})
 
-    action_dim: int = field(init=False, metadata={"help": "Action dimension."})
+    action_dim: int = field(default=None, init=False, metadata={"help": "Action dimension."})
     compute_dtype: str = field(default="float32", metadata={"help": "Compute dtype."})
 
     def __init__(self, **kwargs):
