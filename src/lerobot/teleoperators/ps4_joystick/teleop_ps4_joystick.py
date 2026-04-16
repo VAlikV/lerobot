@@ -116,3 +116,7 @@ class PS4JoystickTeleop(Teleoperator):
             self._ps4_joystick.stop()
             self._ps4_joystick = None
         logger.info(f"{self} disconnected")
+
+    def reset(self):
+        if self._ps4_joystick is not None:
+            self._ps4_joystick.reset()
