@@ -250,7 +250,7 @@ class GamepadController(InputController):
                 elif event.button == 1:
                     self.episode_end_status = TeleopEvents.FAILURE
                 # X button (0) for rerecord
-                elif event.button == 4: # For ps4
+                elif event.button == 3: # For ps4
                     self.episode_end_status = TeleopEvents.RERECORD_EPISODE
 
                 # RB button (6) for closing gripper
@@ -263,7 +263,7 @@ class GamepadController(InputController):
 
             # Reset episode status on button release
             elif event.type == pygame.JOYBUTTONUP:
-                if event.button in [0, 2, 3]:
+                if event.button in [2, 1, 3]:
                     self.episode_end_status = None
 
                 elif event.button == 6:
