@@ -18,6 +18,7 @@ import functools
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from typing import TypedDict
+import logging
 
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -444,9 +445,19 @@ class ReplayBuffer:
         if capacity is None:
             capacity = len(lerobot_dataset)
 
-        if capacity < len(lerobot_dataset):
-            raise ValueError(
-                "The capacity of the ReplayBuffer must be greater than or equal to the length of the LeRobotDataset."
+        # if capacity < len(lerobot_dataset):
+        #     raise ValueError(
+        #         "The capacity of the ReplayBuffer must be greater than or equal to the length of the LeRobotDataset."
+        #     )
+
+        start_idx = max(0, len(lerobot_dataset) - capacity)
+        if start_idx > 0:
+            from torch.utils.data import Subset
+            lerobot_dataset = Subset(lerobot_dataset, list(range(start_idx, len(lerobot_dataset))))
+            logging.warning(
+                f"ReplayBuffer capacity ({capacity} < dataset length)"
+                f"({len(lerobot_dataset)}; keeping only the most recent) "
+                f"{capacity} transitions (discarding oldest {start_idx})"
             )
 
         # Create replay buffer with image augmentation and DrQ settings
