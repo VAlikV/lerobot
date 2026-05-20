@@ -30,6 +30,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.envs.configs import HILSerlRobotEnvConfig
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.processor import (
+    ActionProcessorStep,
     AddBatchDimensionProcessorStep,
     AddTeleopActionAsComplimentaryDataStep,
     AddTeleopEventsAsInfoStep,
@@ -43,6 +44,7 @@ from lerobot.processor import (
     MapDeltaActionToRobotActionStep,
     MapTensorToDeltaActionDictStep,
     Numpy2TorchActionProcessorStep,
+    PolicyAction,
     RewardClassifierProcessorStep,
     RobotActionToPolicyActionProcessorStep,
     RobotObservation,
@@ -84,6 +86,9 @@ from .joint_observations_processor import JointVelocityProcessorStep, MotorCurre
 
 logging.basicConfig(level=logging.INFO, force=True)
 
+RESPONSIBLE = "responsible"
+DEFAULT_RESPONSIBLE_BUTTON = 4  # L1/LB on pygame PS4/DualSense-style mappings.
+
 
 @dataclass
 class DatasetConfig:
@@ -105,6 +110,18 @@ class DatasetConfig:
     # exclusive with --dataset.overwrite. num_episodes_to_record counts the
     # episodes for THIS session only (not total).
     resume: bool = False
+    # Optional manual marker for high-responsibility frames. When enabled,
+    # holding responsible_button writes responsible_key=1.0 for that frame.
+    record_responsible: bool = False
+    responsible_key: str = RESPONSIBLE
+    responsible_button: int = DEFAULT_RESPONSIBLE_BUTTON
+
+
+@dataclass
+class PolicySelectorConfig:
+    """Minimal policy selector used to resolve recording/eval action mode."""
+
+    type: str | None = None
 
 
 @dataclass
@@ -113,10 +130,110 @@ class GymManipulatorConfig:
 
     env: HILSerlRobotEnvConfig
     dataset: DatasetConfig
+    policy: PolicySelectorConfig | None = None
     mode: str | None = None  # Either "record", "replay", None
     device: str = "cpu"
     # If True, open a Rerun viewer and stream observation/action data every step.
     rerun: bool = False
+
+
+def _resolve_action_mode(cfg: GymManipulatorConfig) -> str:
+    """Resolve env action representation from explicit config or policy type."""
+
+    requested = getattr(cfg.env, "action_mode", "auto")
+    if requested not in ("auto", "delta", "absolute"):
+        raise ValueError(
+            f"Unsupported action_mode={requested!r}. Expected one of: auto, delta, absolute."
+        )
+    if requested != "auto":
+        return requested
+
+    policy_type = (cfg.policy.type if cfg.policy is not None else None) or ""
+    return "absolute" if policy_type.lower() == "act" else "delta"
+
+
+def _sim_action_feature_names(action_dim: int, action_mode: str, use_gripper: bool) -> list[str]:
+    if action_mode == "absolute":
+        xyz = ["target_x", "target_y", "target_z"]
+    else:
+        xyz = ["delta_x", "delta_y", "delta_z"]
+    names = list(xyz)
+    non_gripper_dims = action_dim - (1 if use_gripper else 0)
+    if non_gripper_dims > 3:
+        names.append("delta_yaw")
+        names.extend(f"action_extra_{idx}" for idx in range(non_gripper_dims - 4))
+    if use_gripper:
+        names.append("gripper")
+    return names
+
+
+def _read_responsible_button(teleop_device: Teleoperator | None, button: int) -> bool:
+    """Return True while the operator holds the L1/LB responsibility marker."""
+
+    gamepad = getattr(teleop_device, "gamepad", None)
+    joystick = getattr(gamepad, "joystick", None)
+    if joystick is None:
+        return False
+    try:
+        return bool(joystick.get_button(button))
+    except Exception:
+        return False
+
+
+@dataclass
+class SimDeltaActionToAbsoluteTargetStep(ActionProcessorStep):
+    """Convert live teleop delta actions into absolute EE targets for ACT datasets."""
+
+    env: gym.Env
+
+    def _adapter(self):
+        env = self.env
+        while env is not None:
+            if hasattr(env, "_ee_ref_pos") and hasattr(env, "action_step_size"):
+                return env
+            env = getattr(env, "env", None)
+        raise RuntimeError("sim_assembling absolute action mode requires AssemblingHILAdapter.")
+
+    def action(self, action: PolicyAction) -> PolicyAction:
+        adapter = self._adapter()
+        if not isinstance(action, PolicyAction):
+            raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
+
+        out = action.clone()
+        squeeze = False
+        if out.dim() > 1:
+            out = out.squeeze(0)
+            squeeze = True
+
+        current = getattr(adapter, "_ee_ref_pos", None)
+        if current is None:
+            return action
+
+        current_t = torch.as_tensor(current, dtype=out.dtype, device=out.device)
+        step_size = float(getattr(adapter, "action_step_size", 0.0))
+        target = current_t + torch.clamp(out[:3], -1.0, 1.0) * step_size
+
+        ee_min = getattr(adapter, "_ee_min", None)
+        ee_max = getattr(adapter, "_ee_max", None)
+        if ee_min is not None:
+            target = torch.maximum(target, torch.as_tensor(ee_min, dtype=out.dtype, device=out.device))
+        if ee_max is not None:
+            target = torch.minimum(target, torch.as_tensor(ee_max, dtype=out.dtype, device=out.device))
+
+        out[:3] = target
+        return out.unsqueeze(0) if squeeze else out
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        new_transition = transition.copy()
+        new_action = self.action(new_transition[TransitionKey.ACTION])
+        new_transition[TransitionKey.ACTION] = new_action
+        complementary_data = new_transition.get(TransitionKey.COMPLEMENTARY_DATA, {}).copy()
+        complementary_data["teleop_action"] = new_action
+        new_transition[TransitionKey.COMPLEMENTARY_DATA] = complementary_data
+        return new_transition
+
+    def transform_features(self, features):
+        return features
 
 
 def reset_follower_position(robot_arm: Robot, target_position: np.ndarray) -> None:
@@ -382,6 +499,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             "mode": sim_mode,
             "max_episode_steps": max_ep,
             "render_mode": render_mode,
+            "action_mode": getattr(cfg, "action_mode", "delta"),
             "use_gripper": use_gripper,
             "action_step_size": action_step_size,
             "yaw_step_size": yaw_step_size,
@@ -556,6 +674,12 @@ def make_processors(
                 terminate_on_success=terminate_on_success,
             )
         )
+        if (
+            cfg.name == "sim_assembling"
+            and getattr(cfg, "action_mode", "delta") == "absolute"
+            and teleop_device is not None
+        ):
+            action_pipeline_steps.append(SimDeltaActionToAbsoluteTargetStep(env=env))
         record_gripper_width = (
             cfg.processor.gripper.record_gripper_width
             if cfg.processor.gripper is not None
@@ -997,7 +1121,15 @@ def control_loop(
 
     dataset = None
     if cfg.mode == "record":
-        if teleop_device:
+        action_mode = getattr(cfg.env, "action_mode", "delta")
+        if cfg.env.name == "sim_assembling" and action_mode == "absolute":
+            action_dim = int(getattr(env.action_space, "shape", (4,))[0])
+            action_features = {
+                "dtype": "float32",
+                "shape": (action_dim,),
+                "names": _sim_action_feature_names(action_dim, action_mode, use_gripper),
+            }
+        elif teleop_device:
             action_features = teleop_device.action_features
         else:
             action_features = {
@@ -1010,6 +1142,12 @@ def control_loop(
             REWARD: {"dtype": "float32", "shape": (1,), "names": None},
             DONE: {"dtype": "bool", "shape": (1,), "names": None},
         }
+        if cfg.dataset.record_responsible:
+            features[cfg.dataset.responsible_key] = {
+                "dtype": "float32",
+                "shape": (1,),
+                "names": [cfg.dataset.responsible_key],
+            }
         if use_gripper:
             features["complementary_info.discrete_penalty"] = {
                 "dtype": "float32",
@@ -1249,6 +1387,11 @@ def control_loop(
                 REWARD: np.array([transition[TransitionKey.REWARD]], dtype=np.float32),
                 DONE: np.array([terminated or truncated], dtype=bool),
             }
+            if cfg.dataset.record_responsible:
+                frame[cfg.dataset.responsible_key] = np.array(
+                    [float(_read_responsible_button(teleop_device, cfg.dataset.responsible_button))],
+                    dtype=np.float32,
+                )
             if use_gripper:
                 discrete_penalty = transition[TransitionKey.COMPLEMENTARY_DATA].get("discrete_penalty", 0.0)
                 frame["complementary_info.discrete_penalty"] = np.array([discrete_penalty], dtype=np.float32)
@@ -1382,6 +1525,10 @@ def replay_trajectory(
 
     for action_data in actions:
         start_time = time.perf_counter()
+        if cfg.env.name == "sim_assembling" and getattr(cfg.env, "action_mode", "delta") == "absolute":
+            env.step(np.asarray(action_data[ACTION], dtype=np.float32))
+            precise_sleep(max(1 / cfg.env.fps - (time.perf_counter() - start_time), 0.0))
+            continue
         transition = create_transition(
             observation=env.get_raw_joint_positions() if hasattr(env, "get_raw_joint_positions") else {},
             action=action_data[ACTION],
@@ -1394,6 +1541,7 @@ def replay_trajectory(
 @parser.wrap()
 def main(cfg: GymManipulatorConfig) -> None:
     """Main entry point for gym manipulator script."""
+    cfg.env.action_mode = _resolve_action_mode(cfg)
     env, teleop_device = make_robot_env(cfg.env)
     env_processor, action_processor = make_processors(env, teleop_device, cfg.env, cfg.device)
 
@@ -1404,6 +1552,7 @@ def main(cfg: GymManipulatorConfig) -> None:
 
     print("Environment observation space:", env.observation_space)
     print("Environment action space:", env.action_space)
+    print("Environment action mode:", cfg.env.action_mode)
     print("Environment processor:", env_processor)
     print("Action processor:", action_processor)
 

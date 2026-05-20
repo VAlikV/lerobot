@@ -56,6 +56,34 @@ from lerobot.utils.utils import (
 )
 
 
+def _get_responsible_batch_weights(
+    batch: Any,
+    *,
+    enabled: bool,
+    loss_weight: float,
+    key: str,
+    device: torch.device,
+) -> torch.Tensor | None:
+    """Build per-sample weights from a dataset `responsible` flag."""
+
+    if not enabled:
+        return None
+
+    marker = batch.get(key)
+    if marker is None and key != "responcible":
+        # Backward-compatible typo tolerance for early local datasets/configs.
+        marker = batch.get("responcible")
+    if marker is None:
+        return None
+
+    marker = torch.as_tensor(marker, device=device, dtype=torch.float32)
+    if marker.ndim == 0:
+        marker = marker.reshape(1)
+    marker = marker.reshape(marker.shape[0], -1).amax(dim=1)
+    marker = (marker > 0.5).float()
+    return 1.0 + marker * (float(loss_weight) - 1.0)
+
+
 def update_policy(
     train_metrics: MetricsTracker,
     policy: PreTrainedPolicy,
@@ -66,6 +94,9 @@ def update_policy(
     lr_scheduler=None,
     lock=None,
     rabc_weights_provider=None,
+    responsible_weighting_enabled: bool = False,
+    responsible_loss_weight: float = 2.0,
+    responsible_key: str = "responsible",
 ) -> tuple[MetricsTracker, dict]:
     """
     Performs a single training step to update the policy's weights.
@@ -98,21 +129,44 @@ def update_policy(
     if rabc_weights_provider is not None:
         rabc_batch_weights, rabc_batch_stats = rabc_weights_provider.compute_batch_weights(batch)
 
+    responsible_batch_weights = _get_responsible_batch_weights(
+        batch,
+        enabled=responsible_weighting_enabled,
+        loss_weight=responsible_loss_weight,
+        key=responsible_key,
+        device=accelerator.device,
+    )
+
+    sample_weights = None
+    if rabc_batch_weights is not None:
+        sample_weights = rabc_batch_weights
+    if responsible_batch_weights is not None:
+        sample_weights = (
+            responsible_batch_weights
+            if sample_weights is None
+            else sample_weights.to(responsible_batch_weights.device) * responsible_batch_weights
+        )
+
     # Let accelerator handle mixed precision
     with accelerator.autocast():
-        # Use per-sample loss when RA-BC is enabled for proper weighting
-        if rabc_batch_weights is not None:
+        # Use per-sample loss when any sample weighting is enabled.
+        if sample_weights is not None:
             # Get per-sample losses
             per_sample_loss, output_dict = policy.forward(batch, reduction="none")
 
-            # Apply RA-BC weights: L_RA-BC = Σ(w_i * l_i) / (Σw_i + ε)
-            # rabc_batch_weights is already normalized to sum to batch_size
+            # Apply sample weights: L = Σ(w_i * l_i) / (Σw_i + ε).
             epsilon = 1e-6
-            loss = (per_sample_loss * rabc_batch_weights).sum() / (rabc_batch_weights.sum() + epsilon)
-            # Log raw mean weight (before normalization) - this is the meaningful metric
-            output_dict["rabc_mean_weight"] = rabc_batch_stats["raw_mean_weight"]
-            output_dict["rabc_num_zero_weight"] = rabc_batch_stats["num_zero_weight"]
-            output_dict["rabc_num_full_weight"] = rabc_batch_stats["num_full_weight"]
+            sample_weights = sample_weights.to(per_sample_loss.device)
+            loss = (per_sample_loss * sample_weights).sum() / (sample_weights.sum() + epsilon)
+            if rabc_batch_stats is not None:
+                # Log raw mean weight (before normalization) - this is the meaningful metric
+                output_dict["rabc_mean_weight"] = rabc_batch_stats["raw_mean_weight"]
+                output_dict["rabc_num_zero_weight"] = rabc_batch_stats["num_zero_weight"]
+                output_dict["rabc_num_full_weight"] = rabc_batch_stats["num_full_weight"]
+            if responsible_batch_weights is not None:
+                responsible_flags = responsible_batch_weights > 1.0
+                output_dict["responsible_frac"] = responsible_flags.float().mean().item()
+                output_dict["responsible_loss_weight"] = float(responsible_loss_weight)
         else:
             loss, output_dict = policy.forward(batch)
 
@@ -471,6 +525,9 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             accelerator=accelerator,
             lr_scheduler=lr_scheduler,
             rabc_weights_provider=rabc_weights,
+            responsible_weighting_enabled=cfg.use_responsible_weighting,
+            responsible_loss_weight=cfg.responsible_loss_weight,
+            responsible_key=cfg.responsible_key,
         )
 
         # Note: eval and checkpoint happens *after* the `step`th training update has completed, so we

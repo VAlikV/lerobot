@@ -74,6 +74,13 @@ class TrainPipelineConfig(HubMixin):
     rabc_epsilon: float = 1e-6  # Small constant for numerical stability
     rabc_head_mode: str | None = "sparse"  # For dual-head models: "sparse" or "dense"
 
+    # Optional manual responsibility weighting. Datasets recorded with
+    # gym_manipulator can contain a per-frame `responsible` flag; samples with
+    # that flag set get this multiplier in the supervised policy loss.
+    use_responsible_weighting: bool = False
+    responsible_loss_weight: float = 2.0
+    responsible_key: str = "responsible"
+
     # Rename map for the observation to override the image and state keys
     rename_map: dict[str, str] = field(default_factory=dict)
     checkpoint_path: Path | None = field(init=False, default=None)

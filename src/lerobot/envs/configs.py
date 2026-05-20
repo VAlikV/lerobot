@@ -344,6 +344,11 @@ class HILSerlRobotEnvConfig(EnvConfig):
     # and the right stick horizontal drives EE yaw. If False, 4D [dx, dy, dz, gripper].
     include_yaw_slot: bool = False
 
+    # Action representation for envs that support both policy-friendly absolute
+    # targets and RL-friendly relative deltas. "auto" is resolved by callers
+    # that know the downstream policy type (e.g. ACT -> absolute).
+    action_mode: str = "auto"  # "auto" | "delta" | "absolute"
+
     # Translate every free-body object by this xyz offset at reset (sim_assembling
     # only). Useful to spawn objects closer to the EE start pose without editing
     # scene.xml. EE start is roughly (0.10, -0.65, 0.36); scene.xml anchors the

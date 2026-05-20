@@ -20,6 +20,13 @@ Scene: `scene.xml` (cap rgba 0.5 light gray, cam_front at `(0,-1.1,0.37) fovy 45
 
 ### 1.2 Recording
 
+Action representation must be selected from the downstream policy type:
+
+- `policy.type == "act"`: record and replay **absolute end-effector targets** as actions. ACT is trained with chunked supervised targets, and imitation learning is more stable when the action at frame `t` is the absolute target pose to reproduce, not a small delta that must be integrated open-loop.
+- RL / residual policies (`sac`, HIL-SERL residual, etc.): keep the current **delta-position action** contract. The env applies the delta to the current EE pose, which is useful for online correction and human intervention.
+
+Implementation rule: before recording a dataset, set the env/action processor branch from the policy config. If the train/eval config has `policy.type == "act"`, use the absolute-action processor path; otherwise use the delta-action path.
+
 ```bash
 DISPLAY=:0 uv run python -m lerobot.rl.gym_manipulator \
   --config_path=src/lerobot/rl/sim_3stage_multistage_record.json
@@ -141,6 +148,17 @@ w = 0                       if delta < 0      # regression — drop
 ## 4. ACT training (with RA-BC)
 
 Action Chunking Transformer (`lerobot/policies/act`), modified to support per-sample loss for RA-BC weighting.
+
+ACT datasets must use absolute actions, not delta actions. Check this before training:
+
+```
+if policy.type == "act":
+    action_mode = "absolute"
+else:
+    action_mode = "delta"
+```
+
+The same `action_mode` must be used consistently for recording, dataset stats, training normalization, replay, and eval. Mixing a delta-action dataset with an ACT config trains the model to predict local velocity-like commands, then executes them as targets/chunks, which is the failure mode to avoid.
 
 ### 4.1 Cfg recipe (production v11)
 

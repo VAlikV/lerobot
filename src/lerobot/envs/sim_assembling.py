@@ -5,7 +5,8 @@ that lerobot's HIL-SERL processor pipeline expects:
 
 - ``pixels.front``, ``pixels.wrist``: (H, W, 3) uint8, default resized to 128x128
 - ``agent_pos``: flat 15-dim float32 = joint_pos(7) + ee_pos(3) + ee_quat(4) + gripper_qpos(1)
-- action: Box[-1, 1] shape=(3,) — delta (dx, dy, dz); optional discrete gripper
+- action: Box shape=(3,) — delta (dx, dy, dz) or absolute EE xyz depending on
+  ``action_mode``; optional discrete gripper
   (num_discrete_actions=3: close/stay/open — standard lerobot encoding)
   appended when ``use_gripper=True``
 
@@ -67,6 +68,8 @@ class AssemblingHILAdapter(gym.Wrapper):
             to match lerobot's ps4_joystick ``delta_mode`` teleop (which emits 5 values).
             ``dyaw`` is ignored internally — the task is vertical pick-and-place so the
             wrist orientation is held at the reset quaternion.
+        action_mode: "delta" integrates the first three action dims as position
+            deltas. "absolute" treats them as the EE xyz target directly.
     """
 
     metadata = {"render_fps": 10, "render_modes": ["rgb_array", "human"]}
@@ -86,9 +89,12 @@ class AssemblingHILAdapter(gym.Wrapper):
         ee_bounds_min: tuple[float, float, float] | None = None,
         ee_bounds_max: tuple[float, float, float] | None = None,
         record_gripper_width: bool = False,
+        action_mode: str = "delta",
     ):
         super().__init__(env)
         assert env.use_task_space, "AssemblingHILAdapter requires use_task_space=True"
+        if action_mode not in ("delta", "absolute"):
+            raise ValueError(f"Unsupported sim_assembling action_mode={action_mode!r}")
         self.image_size = image_size
         self.cam_front_key = cam_front_key
         self.cam_wrist_key = cam_wrist_key
@@ -107,10 +113,24 @@ class AssemblingHILAdapter(gym.Wrapper):
         # If True, action[gripper_idx] is the *width target in [0, 1]*
         # (0=closed, 1=open) and is passed straight to the gripper actuator.
         self.record_gripper_width = bool(record_gripper_width)
+        self.action_mode = action_mode
 
-        # [dx, dy, dz] + optional [dyaw] + optional [gripper]
-        low = [-1.0, -1.0, -1.0]
-        high = [1.0, 1.0, 1.0]
+        # [xyz] + optional [dyaw] + optional [gripper]. In delta mode xyz is
+        # normalized stick delta; in absolute mode xyz is world-space EE target.
+        if self.action_mode == "absolute":
+            low = (
+                self._ee_min.astype(np.float32).tolist()
+                if self._ee_min is not None
+                else [-np.inf, -np.inf, -np.inf]
+            )
+            high = (
+                self._ee_max.astype(np.float32).tolist()
+                if self._ee_max is not None
+                else [np.inf, np.inf, np.inf]
+            )
+        else:
+            low = [-1.0, -1.0, -1.0]
+            high = [1.0, 1.0, 1.0]
         if self.include_yaw_slot:
             low.append(-1.0)
             high.append(1.0)
@@ -229,9 +249,14 @@ class AssemblingHILAdapter(gym.Wrapper):
         if self._ee_ref_pos is None:
             raise RuntimeError("AssemblingHILAdapter.step called before reset().")
 
-        # Layout: [dx, dy, dz] + (optional [dyaw]) + (optional [gripper]).
-        dxyz = np.clip(a[:3], -1.0, 1.0) * self.action_step_size
-        self._ee_ref_pos = self._ee_ref_pos + dxyz
+        # Layout: [xyz] + (optional [dyaw]) + (optional [gripper]).
+        # In delta mode xyz is normalized stick delta. In absolute mode xyz is
+        # the desired EE target in world coordinates.
+        if self.action_mode == "absolute":
+            self._ee_ref_pos = a[:3].astype(np.float64)
+        else:
+            dxyz = np.clip(a[:3], -1.0, 1.0) * self.action_step_size
+            self._ee_ref_pos = self._ee_ref_pos + dxyz
 
         # Workspace bounds (set min[i]==max[i] to lock axis i).
         if self._ee_min is not None:
@@ -287,6 +312,7 @@ def make_assembling_env(
     ee_bounds_min: tuple[float, float, float] | None = None,
     ee_bounds_max: tuple[float, float, float] | None = None,
     record_gripper_width: bool = False,
+    action_mode: str = "delta",
     **_ignored: Any,
 ) -> gym.Env:
     """Factory used by ``gym.make("sim_assembling/AssembleBase-v0", ...)``.
@@ -318,6 +344,7 @@ def make_assembling_env(
         ee_bounds_min=ee_bounds_min,
         ee_bounds_max=ee_bounds_max,
         record_gripper_width=record_gripper_width,
+        action_mode=action_mode,
     )
 
 

@@ -23,6 +23,7 @@ import torch
 from lerobot.cameras import opencv  # noqa: F401
 from lerobot.configs import parser
 from lerobot.configs.train import TrainRLServerPipelineConfig
+from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.policies.sac.configuration_sac import SACConfig  # noqa: F401  # register draccus type so cfg parses
 from lerobot.processor import TransitionKey
@@ -117,6 +118,8 @@ def run_eval(
     env_proc,
     action_proc,
     policy: PreTrainedPolicy,
+    policy_preprocessor,
+    policy_postprocessor,
     n_episodes: int,
     task: str,
     device: str,
@@ -202,7 +205,9 @@ def run_eval(
                     if p_succ >= cnn_thr:
                         cnn_success = True
             batch = _to_batch(obs_dict, device, task)
-            action = policy.select_action(batch)  # (1, action_dim)
+            batch = policy_preprocessor(batch)
+            action = policy.select_action(batch)  # (1, action_dim), normalized policy space
+            action = policy_postprocessor(action)  # unnormalized env/action-dataset space
             action = action.squeeze(0)
             transition = step_env_and_process_transition(
                 env=env,
@@ -300,11 +305,21 @@ def main(cfg: TrainRLServerPipelineConfig) -> None:
     policy = policy_cls.from_pretrained(aux.pretrained, config=pretrained_config)
     policy.to(device)
     policy.eval()
+    policy_preprocessor, policy_postprocessor = make_pre_post_processors(
+        policy_cfg=pretrained_config,
+        pretrained_path=aux.pretrained,
+        preprocessor_overrides={
+            "device_processor": {
+                "device": device,
+            },
+        },
+    )
 
     env_proc, action_proc = _make_processors(env, teleop_device=None, cfg=cfg.env, device=device)
 
     results = run_eval(
-        env, env_proc, action_proc, policy, aux.n_episodes, aux.task, device,
+        env, env_proc, action_proc, policy, policy_preprocessor, policy_postprocessor,
+        aux.n_episodes, aux.task, device,
         video_dir=aux.video_dir, cnn_ckpt=aux.cnn_ckpt, cnn_thr=aux.cnn_thr,
     )
     logging.info("=" * 60)

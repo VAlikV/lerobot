@@ -17,10 +17,10 @@ MAX_STEPS_PER_EPISODE = 10000
 
 def main():
     device = torch.device("cuda")  # or "cuda" or "cpu"
-    model_id = "outputs/robot_learning_tutorial/act/last"
+    model_id = "outputs/act_resp/checkpoints/050000/pretrained_model"
     model = ACTPolicy.from_pretrained(model_id)
 
-    dataset_id = "local/ACT_RC10_60eps_pcb"
+    dataset_id = "local/act60eps_no_resp"
     # This only downloads the metadata for the dataset, ~10s of MB even for large-scale datasets
     dataset_metadata = LeRobotDatasetMetadata(dataset_id)
     # preprocess, postprocess = make_pre_post_processors(model.config, dataset_stats=dataset_metadata.stats)
