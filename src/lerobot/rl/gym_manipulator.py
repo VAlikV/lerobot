@@ -745,8 +745,10 @@ def step_env_and_process_transition(
     terminated = terminated or processed_action_transition[TransitionKey.DONE]
     truncated = truncated or processed_action_transition[TransitionKey.TRUNCATED]
     complementary_data = processed_action_transition[TransitionKey.COMPLEMENTARY_DATA].copy()
-    new_info = processed_action_transition[TransitionKey.INFO].copy()
-    new_info.update(info)
+    # Merge: action-processor info (teleop flags like IS_INTERVENTION) takes
+    # priority over the env.step() info dict, which always returns IS_INTERVENTION=False
+    # because the env has no visibility into whether the action was from a human or policy.
+    new_info = {**info, **processed_action_transition[TransitionKey.INFO]}
 
     new_transition = create_transition(
         observation=obs,

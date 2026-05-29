@@ -1162,7 +1162,7 @@ def process_transitions(
 
             # Add to offline buffer if it's an intervention
             if dataset_repo_id is not None and transition.get("complementary_info", {}).get(
-                TeleopEvents.IS_INTERVENTION
+                TeleopEvents.IS_INTERVENTION.value
             ):
                 offline_replay_buffer.add(**transition)
 

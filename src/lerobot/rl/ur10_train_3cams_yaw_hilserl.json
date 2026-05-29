@@ -1,0 +1,224 @@
+{
+    "output_dir": null,
+    "job_name": "pcb_act_3cams_yaw_hilserl",
+    "resume": false,
+    "seed": 1000,
+    "num_workers": 4,
+    "batch_size": 128,
+    "steps": 100000,
+    "eval_freq": 20000,
+    "log_freq": 1,
+    "save_checkpoint": true,
+    "save_freq": 1000,
+    "use_policy_training_preset": true,
+    "optimizer": null,
+    "scheduler": null,
+    "wandb": {
+        "enable": false,
+        "project": "ur10_hilserl",
+        "disable_artifact": true
+    },
+    "dataset": {
+        "repo_id": "local/pcb_act_3cams_yaw_hilserl",
+        "use_imagenet_stats": false
+    },
+    "env": {
+        "type": "gym_manipulator",
+        "name": "ur10",
+        "task": "pcb_act_3cams_yaw_hilserl",
+        "fps": 10,
+        "robot": {
+            "type": "ur10",
+            "ip": "192.168.0.100",
+            "rtde_frequency": 500,
+            "tcp_offset": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "payload_mass": 0.3,
+            "payload_cog": [0.0, 0.0, 0.0],
+            "gripper_port": "/dev/ttyACM0",
+            "gripper_baudrate": 115200,
+            "cameras": {
+                "front": {"type": "intelrealsense", "serial_number_or_name": "409122272284", "width": 640, "height": 480, "fps": 30},
+                "side":  {"type": "intelrealsense", "serial_number_or_name": "409122273078", "width": 640, "height": 480, "fps": 30},
+                "wrist": {"type": "intelrealsense", "serial_number_or_name": "323622272232", "width": 640, "height": 480, "fps": 30}
+            }
+        },
+        "teleop": {
+            "type": "gamepad",
+            "use_gripper": true,
+            "use_yaw": true,
+            "invert_delta_x": true,
+            "invert_delta_y": true,
+            "invert_delta_z": false,
+            "invert_delta_yaw": false
+        },
+        "processor": {
+            "control_mode": "gamepad",
+            "gripper": {
+                "use_gripper": true,
+                "gripper_penalty": -0.02
+            },
+            "reset": {
+                "fixed_reset_joint_positions": [-0.1022, -0.5553, 0.3558, -3.141, 0.0, 0.0],
+                "reset_time_s": 10.0,
+                "control_time_s": 30.0,
+                "terminate_on_success": true,
+                "randomization_xy": 0.001
+            },
+            "observation": {
+                "display_cameras": true
+            },
+            "image_preprocessing": {
+                "crop_params_dict": {
+                    "observation.images.front": [101, 89, 379, 493],
+                    "observation.images.wrist": [47, 123, 429, 515]
+                },
+                "resize_size": [128, 128]
+            },
+            "inverse_kinematics": {
+                "use_yaw": true,
+                "end_effector_step_sizes": {"x": 0.002, "y": 0.002, "z": 0.002, "yaw": 0.01},
+                "end_effector_bounds": {
+                    "min": [-0.2464, -0.6067, 0.3305, -0.5113],
+                    "max": [0.0337, -0.5153, 0.3676, 0.2661]
+                }
+            }
+        },
+        "features": {
+            "observation.images.front": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.side": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.state": {
+                "type": "STATE",
+                "shape": [17]
+            },
+            "action": {
+                "type": "ACTION",
+                "shape": [4]
+            }
+        },
+        "features_map": {
+            "observation.images.front": "observation.images.front",
+            "observation.images.side":  "observation.images.side",
+            "observation.images.wrist": "observation.images.wrist",
+            "observation.state": "observation.state",
+            "action": "action"
+        }
+    },
+    "policy": {
+        "type": "sac",
+        "n_obs_steps": 1,
+        "normalization_mapping": {
+            "VISUAL": "MEAN_STD",
+            "STATE": "MIN_MAX",
+            "ENV": "MIN_MAX",
+            "ACTION": "MIN_MAX"
+        },
+        "input_features": {
+            "observation.images.front": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.side": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.images.wrist": {
+                "type": "VISUAL",
+                "shape": [3, 128, 128]
+            },
+            "observation.state": {
+                "type": "STATE",
+                "shape": [17]
+            }
+        },
+        "output_features": {
+            "action": {
+                "type": "ACTION",
+                "shape": [4]
+            }
+        },
+        "device": "cuda",
+        "use_amp": false,
+        "dataset_stats": {
+            "observation.images.front": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.images.side": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.images.wrist": {
+                "mean": [0.485, 0.456, 0.406],
+                "std": [0.229, 0.224, 0.225]
+            },
+            "observation.state": {
+                "min": [0.8611, -1.7606, 2.1486, 4.0833, 4.7065, 1.9317, -0.0476, -0.0587, -0.04, -0.0497, -0.0023, -0.1482, -0.1442, -0.0514, -0.0, -0.5113, 0.0],
+                "max": [1.3243, -1.5533, 2.3089, 4.2077, 4.7137, 2.9108, 0.0468, 0.0474, 0.0369, 0.0599, 0.0082, 0.1546, 0.1359, 0.04, 0.0539, 0.2661, 1.0]
+            },
+            "action": {
+                "min": [-1.0, -1.0, -1.0, -1.0],
+                "max": [1.0, 1.0, 1.0, 1.0]
+            }
+        },
+        "repo_id": "local/pcb_act_3cams_yaw_hilserl",
+        "storage_device": "cpu",
+        "vision_encoder_name": "helper2424/resnet10",
+        "freeze_vision_encoder": true,
+        "image_encoder_hidden_dim": 32,
+        "shared_encoder": true,
+        "online_steps": 1000000,
+        "online_buffer_capacity": 100000,
+        "offline_buffer_capacity": 100000,
+        "online_step_before_learning": 100,
+        "policy_update_freq": 1,
+        "discount": 0.98,
+        "temperature_init": 0.01,
+        "num_critics": 2,
+        "num_subsample_critics": null,
+        "critic_lr": 0.0003,
+        "actor_lr": 0.0003,
+        "temperature_lr": 0.0003,
+        "critic_target_update_weight": 0.005,
+        "utd_ratio": 2,
+        "state_encoder_hidden_dim": 64,
+        "latent_dim": 256,
+        "target_entropy": null,
+        "use_backup_entropy": true,
+        "grad_clip_norm": 10.0,
+        "num_discrete_actions": 3,
+        "critic_network_kwargs": {
+            "hidden_dims": [256, 256],
+            "activate_final": true,
+            "final_activation": null
+        },
+        "actor_network_kwargs": {
+            "hidden_dims": [256, 256],
+            "activate_final": true
+        },
+        "policy_kwargs": {
+            "use_tanh_squash": true,
+            "std_min": 1e-5,
+            "std_max": 5,
+            "init_final": 0.05
+        },
+        "actor_learner_config": {
+            "learner_host": "127.0.0.1",
+            "learner_port": 50051,
+            "policy_parameters_push_frequency": 4
+        },
+        "concurrency": {
+            "actor": "threads",
+            "learner": "threads"
+        }
+    }
+}
