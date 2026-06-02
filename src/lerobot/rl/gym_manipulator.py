@@ -407,6 +407,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             use_yaw=use_yaw,
             randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
             randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
+            randomization_yaw=reset_cfg.randomization_yaw if reset_cfg else 0.0,
         )
         env = UR10RobotEnv(robot, env_config)
         # The env starts the streaming thread internally using cfg.stream_frequency_hz;
@@ -414,6 +415,11 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
 
         teleop_device = make_teleoperator_from_config(cfg.teleop)
         teleop_device.connect()
+
+        # Wire the teleop device into the env so the operator can control the gripper
+        # during the reset window (gripper opens automatically, operator grips PCB).
+        env.set_reset_teleop(teleop_device)
+
         return env, teleop_device
 
     # Real robot environment (SO101 and other motor-bus robots)

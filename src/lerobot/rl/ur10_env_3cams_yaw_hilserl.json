@@ -1,7 +1,7 @@
 {
     "env": {
         "name": "ur10",
-        "task": "pcb_act_3cams_yaw_hilserl",
+        "task": "pcb_hilserl_3cams_yaw",
         "fps": 10,
         "robot": {
             "type": "ur10",
@@ -34,28 +34,29 @@
                 "gripper_penalty": -0.02
             },
             "reset": {
-                "fixed_reset_joint_positions": [-0.1022, -0.5553, 0.3558, -3.141, 0.0, 0.0],
-                "reset_time_s": 10.0,
-                "control_time_s": 30.0,
+                "fixed_reset_joint_positions": [-0.2202, -0.5553, 0.3675, -3.141, 0.0, 0.0],
+                "reset_time_s": 15.0,
+                "control_time_s": 20.0,
                 "terminate_on_success": true,
-                "randomization_xy": 0.001
+                "randomization_xy": 0.006,
+                "randomization_yaw": 0.06
             },
             "observation": {
                 "display_cameras": true
             },
             "image_preprocessing": {
                 "crop_params_dict": {
-                    "observation.images.front": [101, 89, 379, 493],
-                    "observation.images.wrist": [47, 123, 429, 515]
+                    "observation.images.front": [73, 83, 405, 509],
+                    "observation.images.wrist": [61, 85, 419, 533]
                 },
                 "resize_size": [128, 128]
             },
             "inverse_kinematics": {
                 "use_yaw": true,
-                "end_effector_step_sizes": {"x": 0.002, "y": 0.002, "z": 0.002, "yaw": 0.01},
+                "end_effector_step_sizes": {"x": 0.001, "y": 0.001, "z": 0.001, "yaw": 0.003},
                 "end_effector_bounds": {
-                    "min": [-0.2464, -0.6067, 0.3305, -0.5113],
-                    "max": [0.0337, -0.5153, 0.3676, 0.2661]
+                    "min": [-0.2448, -0.5934, 0.3344, -0.2],
+                    "max": [-0.1797, -0.5177, 0.3676, 0.2]
                 }
             }
         }
@@ -63,8 +64,8 @@
 
 
     "dataset": {
-        "repo_id": "local/pcb_act_3cams_yaw_hilserl",
-        "task": "pcb_act_3cams_yaw_hilserl",
+        "repo_id": "local/pcb_hilserl_3cams_yaw",
+        "task": "pcb_hilserl_3cams_yaw",
         "num_episodes_to_record": 20,
         "push_to_hub": false
     },

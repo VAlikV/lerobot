@@ -145,6 +145,7 @@ class UR10RobotEnvConfig:
     # Start-position randomization (metres) — uniform [-r, +r] applied at reset.
     randomization_xy: float = 0.0
     randomization_z: float = 0.0
+    randomization_yaw: float = 0.0  # radians; only applied when use_yaw=True
 
     # Background streaming-thread frequency (Hz). 200 Hz = 5 ms per servoL call, well above
     # the 10 Hz policy rate and well below UR10e's 500 Hz RTDE max. The thread keeps servoL
@@ -797,6 +798,13 @@ class UR10RobotEnv(gym.Env):
         self.robot = robot
         self.config = config
 
+        # Optional teleop device for gripper control during the reset window. Set via
+        # set_reset_teleop() after construction. When set, reset() polls it at ~20 Hz
+        # so the operator can manually close the gripper on the PCB before the episode
+        # begins — the gripper is opened automatically at reset start, then the operator
+        # uses the gamepad to grip the PCB during the wait period.
+        self._reset_teleop = None
+
         self.ee_step = np.array([
             config.ee_step_sizes["x"],
             config.ee_step_sizes["y"],
@@ -886,6 +894,16 @@ class UR10RobotEnv(gym.Env):
                 lookahead_time=config.servo_lookahead_time,
                 gain=config.servo_gain,
             )
+
+    def set_reset_teleop(self, teleop_device) -> None:
+        """Wire up a teleop device for gripper control during the reset window.
+
+        Once set, every call to reset() will poll the device's gripper command at ~20 Hz
+        throughout the reset_time_s wait, forwarding it to the robot. This lets the operator
+        manually close the gripper on the PCB (which the gripper opens automatically at reset
+        start) before the episode begins.
+        """
+        self._reset_teleop = teleop_device
 
     # -- gym interface ------------------------------------------------------
 
@@ -1083,7 +1101,32 @@ class UR10RobotEnv(gym.Env):
         home[1] = float(np.clip(home[1], self.ee_min[1], self.ee_max[1]))
         home[2] = float(np.clip(home[2], self.ee_min[2], self.ee_max[2]))
 
-        logger.info("  Randomised start: x=%.4f, y=%.4f, z=%.4f", home[0], home[1], home[2])
+        # Yaw randomisation: sample a per-episode offset, clip to the configured yaw
+        # window, then compose the home rotation with R_z(yaw_offset) so that moveL
+        # drives directly to the randomised orientation. Only active when use_yaw=True
+        # and randomization_yaw > 0.
+        #
+        # target_yaw is set to the randomised value (not 0) so that the streaming thread
+        # holds the arm exactly where moveL left it. If it were reset to 0, the very first
+        # step with dyaw=0 would compose R_home * R_z(0) and snap the wrist back to the
+        # non-randomised orientation — an unexpected motion with no policy input.
+        #
+        # The policy observation always starts at yaw_offset=0 (capture_baselines()
+        # anchors to the post-moveL pose), so the clean-zero convention is preserved.
+        randomized_yaw = 0.0
+        if self.use_yaw and self.config.randomization_yaw > 0:
+            r = self.config.randomization_yaw
+            randomized_yaw = float(np.clip(
+                float(rng.uniform(-r, r)), self.yaw_min, self.yaw_max
+            ))
+            R_target = self._R_home * Rotation.from_euler("z", randomized_yaw)
+            rx, ry, rz = (float(v) for v in R_target.as_rotvec())
+            home[3], home[4], home[5] = rx, ry, rz
+
+        logger.info(
+            "  Randomised start: x=%.4f  y=%.4f  z=%.4f  yaw=%.4f rad",
+            home[0], home[1], home[2], randomized_yaw,
+        )
 
         # Blocking moveL drives precisely to the home pose. The streaming thread is paused
         # internally for the duration; on return it resumes tracking the (now updated) target.
@@ -1092,16 +1135,35 @@ class UR10RobotEnv(gym.Env):
             speed=self.config.reset_speed,
             acceleration=self.config.reset_acceleration,
         )
-        precise_sleep(self.config.reset_time_s)
+
+        # During the reset window the operator grips the PCB manually. Poll the teleop
+        # device's gripper command at ~20 Hz so the gamepad input reaches the gripper in
+        # real time. If no teleop device is wired up, fall back to a plain sleep.
+        deadline = time.perf_counter() + self.config.reset_time_s
+        if self._reset_teleop is not None:
+            logger.info(
+                "Reset window open (%.1fs) — use gamepad to grip the PCB.",
+                self.config.reset_time_s,
+            )
+            while time.perf_counter() < deadline:
+                try:
+                    action = self._reset_teleop.get_action()
+                    gripper_cmd = int(action.get("gripper", 1))  # 0=close, 1=stay, 2=open
+                    self.robot.send_gripper(gripper_cmd)
+                except Exception:
+                    pass  # never let teleop errors abort the reset
+                precise_sleep(0.05)  # 20 Hz polling
+        else:
+            precise_sleep(self.config.reset_time_s)
 
         # Latch the commanded xyz to the actual reset pose so the first step delta is
         # applied to a coherent setpoint, not to a stale value. The streaming target is
         # always in *absolute* base-frame coordinates — only the policy-facing observation
         # is relative.
         self.target_xyz = np.array(self.robot.get_current_tcp()[:3], dtype=np.float32)
-        # Reset the yaw offset to 0 every episode (home orientation = R_home, unchanged).
-        # The first step delta accumulates from here and stays inside [yaw_min, yaw_max].
-        self.target_yaw = 0.0
+        # Latch yaw to the randomised value so the streaming thread holds the arm at the
+        # randomised orientation. The policy observation is anchored after this (yaw_obs=0).
+        self.target_yaw = randomized_yaw
 
         # HIL-SERL relative-observation baseline: anchor `tcp_xyz` to the post-settling
         # reset pose. From this point on `get_observation()` returns `tcp_xyz` expressed
