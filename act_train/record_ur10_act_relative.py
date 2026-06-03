@@ -69,10 +69,10 @@ logger = logging.getLogger(__name__)
 
 # -- user-tunable ---------------------------------------------------------------
 CONFIG_PATH = "src/lerobot/rl/ur10_env_3cams_yaw_hilserl.json"
-REPO_ID = "local/pcb_act_3cams_yaw_relative_finetune2"
-TASK_DESCRIPTION = "pcb_act_3cams_yaw_relative_finetune2"
-NUM_EPISODES = 10
-EPISODE_TIME_S = 30      # truncates episode if operator doesn't end it early
+REPO_ID = "local/pcb_act_3cams_yaw_relative_2finetune"
+TASK_DESCRIPTION = "pcb_act_3cams_yaw_relative_2finetune"
+NUM_EPISODES = 20
+EPISODE_TIME_S = 20      # truncates episode if operator doesn't end it early
 RESET_TIME_S = 5         # motion-only budget for auto_reset_to_home (env.reset handles the grip window)
 RESET_SPEED_MPS = 0.1    # auto-reset linear velocity, m/s
 FPS = 10                 # must equal cfg.env.fps

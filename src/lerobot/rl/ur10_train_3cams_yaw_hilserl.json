@@ -1,6 +1,6 @@
 {
     "output_dir": null,
-    "job_name": "pcb_hilserl_3cams_yaw",
+    "job_name": "pcb_hilserl_3cams_yaw_hilserl3",
     "resume": false,
     "seed": 1000,
     "num_workers": 4,
@@ -19,13 +19,13 @@
         "disable_artifact": true
     },
     "dataset": {
-        "repo_id": "local/pcb_hilserl_3cams_yaw",
+        "repo_id": "local/pcb_hilserl_3cams_yaw_hilserl3",
         "use_imagenet_stats": false
     },
     "env": {
         "type": "gym_manipulator",
         "name": "ur10",
-        "task": "pcb_hilserl_3cams_yaw",
+        "task": "pcb_hilserl_3cams_yaw_hilserl3",
         "fps": 10,
         "robot": {
             "type": "ur10",
@@ -60,7 +60,7 @@
             "reset": {
                 "fixed_reset_joint_positions": [-0.2202, -0.5553, 0.3675, -3.141, 0.0, 0.0],
                 "reset_time_s": 15.0,
-                "control_time_s": 20.0,
+                "control_time_s": 10.0,
                 "terminate_on_success": true,
                 "randomization_xy": 0.006,
                 "randomization_yaw": 0.06
@@ -70,8 +70,9 @@
             },
             "image_preprocessing": {
                 "crop_params_dict": {
-                    "observation.images.front": [73, 83, 405, 509],
-                    "observation.images.wrist": [61, 85, 419, 533]
+                    "observation.images.front": [1, 129, 393, 447],
+                    "observation.images.side": [0, 166, 285, 356],
+                    "observation.images.wrist": [21, 99, 397, 461]
                 },
                 "resize_size": [128, 128]
             },
@@ -171,7 +172,7 @@
                 "max": [1.0, 1.0, 1.0, 1.0]
             }
         },
-        "repo_id": "local/pcb_hilserl_3cams_yaw",
+        "repo_id": "local/pcb_hilserl_3cams_yaw_hilserl3",
         "storage_device": "cpu",
         "vision_encoder_name": "helper2424/resnet10",
         "freeze_vision_encoder": true,

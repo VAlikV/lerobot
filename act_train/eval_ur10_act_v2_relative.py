@@ -52,8 +52,10 @@ logger = logging.getLogger(__name__)
 
 
 # -- user-tunable ---------------------------------------------------------------
-MODEL_DIR = "outputs/act/ur10/pcb_act_3cams_yaw_relative_finetune/step_10000"
-DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative_finetune"   # for dataset stats (normalization)
+# step_7500 -  80% success rate
+# step 10000 - 
+MODEL_DIR = "outputs/act/ur10/local/pcb_act_3cams_yaw_relative_2finetune/step_12500"
+DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative"   # for dataset stats (normalization)
 CONFIG_PATH = "src/lerobot/rl/ur10_env_3cams_yaw_hilserl.json"
 NUM_EPISODES = 30
 EPISODE_TIME_S = 20      # safety upper bound; user ends earlier via gamepad

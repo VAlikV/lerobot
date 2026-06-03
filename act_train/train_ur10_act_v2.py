@@ -52,17 +52,17 @@ def _log(msg: str) -> None:
 
 
 # -- user-tunable ---------------------------------------------------------------
-DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative_finetune2"
-OUTPUT_DIR = Path("outputs/act/ur10/pcb_act_3cams_yaw_relative_finetune2")
-TRAINING_STEPS = 10_000
+DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative_2finetune"
+OUTPUT_DIR = Path("outputs/act/ur10/local/pcb_act_3cams_yaw_relative_2finetune")
+TRAINING_STEPS = 25_000
 BATCH_SIZE = 32
 
 # Fine-tuning: load weights from the previous fine-tuned model (30-ep finetune).
-PRETRAINED_PATH: str | None = "outputs/act/ur10/pcb_act_3cams_yaw_relative_finetune/last"
+PRETRAINED_PATH: str | None = "outputs/act/ur10/pcb_act_3cams_yaw_relative/step_70000"
 
 # Checkpointing & logging
 LOG_FREQ = 100
-SAVE_FREQ = 2_000
+SAVE_FREQ = 2_500
 DEVICE = "cuda"
 NUM_WORKERS = 4
 # -------------------------------------------------------------------------------
