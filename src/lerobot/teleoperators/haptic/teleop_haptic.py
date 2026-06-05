@@ -1,5 +1,6 @@
 import logging
 import socket
+from queue import Queue
 from typing import Any
 
 import numpy as np
@@ -14,6 +15,10 @@ from .config_haptic import HapticTeleopConfig
 logger = logging.getLogger(__name__)
 
 
+GRIPPER_OPEN = 1.0
+GRIPPER_CLOSED = -1.0
+
+
 class HapticTeleop(Teleoperator):
     config_class = HapticTeleopConfig
     name = "haptic"
@@ -24,7 +29,9 @@ class HapticTeleop(Teleoperator):
         self._haptic = None
         self._position, rot = self._initial_position()
         self._rotation = Rotation.from_euler("xyz", rot, False).as_matrix()
-        self._gripper_pos = 1.0
+        self._gripper_pos = GRIPPER_OPEN
+        self._gripper_keyboard_listener = None
+        self._gripper_key_queue = Queue()
 
     def _initial_position(self) -> np.ndarray:
         if self.config.init_values is None:
@@ -113,13 +120,16 @@ class HapticTeleop(Teleoperator):
         self._haptic = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._haptic.bind((self.config.ip, self.config.port))
         self._haptic.setblocking(False)
+        self._start_gripper_keyboard_listener()
         logger.info(f"{self} connected")
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
+        self._drain_gripper_keys()
+
         packet = self._read_latest_packet()
         if packet is not None:
-            self._position += packet[:3]
+            self._position += packet[:3]*self.config.haptic_hz/self.config.control_hz
             self._rotation = packet[3:].reshape(3, 3)
 
         roll, pitch, yaw = Rotation.from_matrix(self._rotation).as_euler("xyz", degrees=False)
@@ -154,6 +164,9 @@ class HapticTeleop(Teleoperator):
         pass
 
     def disconnect(self):
+        if self._gripper_keyboard_listener is not None:
+            self._gripper_keyboard_listener.stop()
+            self._gripper_keyboard_listener = None
         if self._haptic is not None:
             self._haptic.close()
             self._haptic = None
@@ -162,3 +175,34 @@ class HapticTeleop(Teleoperator):
     def reset(self):
         self._position = self._initial_position()
         self._rotation = np.eye(3, dtype=np.float64)
+
+    def _start_gripper_keyboard_listener(self) -> None:
+        try:
+            from pynput import keyboard
+        except Exception as exc:
+            logger.warning("Haptic gripper keyboard control disabled: failed to import pynput (%s).", exc)
+            return
+
+        def on_press(key):
+            if not hasattr(key, "char") or key.char is None:
+                return
+
+            key_char = key.char.lower()
+            if key_char == "o":
+                self._gripper_key_queue.put(GRIPPER_OPEN)
+            elif key_char == "c":
+                self._gripper_key_queue.put(GRIPPER_CLOSED)
+
+        try:
+            self._gripper_keyboard_listener = keyboard.Listener(on_press=on_press)
+            self._gripper_keyboard_listener.start()
+        except Exception as exc:
+            self._gripper_keyboard_listener = None
+            logger.warning("Haptic gripper keyboard control disabled: failed to start listener (%s).", exc)
+            return
+
+        logger.info("Haptic gripper keyboard control enabled: 'o' opens, 'c' closes.")
+
+    def _drain_gripper_keys(self) -> None:
+        while not self._gripper_key_queue.empty():
+            self._gripper_pos = float(self._gripper_key_queue.get_nowait())

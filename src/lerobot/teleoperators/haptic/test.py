@@ -14,7 +14,7 @@ def main(config: dict[str, Any] | None = None) -> None:
     from lerobot.robots.kuka_iiwa import KukaIiwa, KukaIiwaConfig
 
     robot_cfg = KukaIiwaConfig(urdf_path="src/lerobot/robots/kuka_iiwa/iiwa.urdf",
-                                gripper_port = "/dev/ttyUSB0",
+                                gripper_port = "/dev/ttyACM1",
                                 gripper_baudrate = 115200,
                                 cameras = {})
     
@@ -52,7 +52,7 @@ def main(config: dict[str, Any] | None = None) -> None:
             roll = float(teleop_action.get("roll.pos", 0.0))
             pitch = float(teleop_action.get("pitch.pos", 0.0))
             yaw = float(teleop_action.get("yaw.pos", 0.0))
-            grip = int(teleop_action.get("gripper", 1))
+            grip = int(teleop_action.get("gripper.pos", 1))
 
             print(x, y, z, roll, pitch, yaw)
 
@@ -74,6 +74,7 @@ def main(config: dict[str, Any] | None = None) -> None:
         print("\n\nInterrupted. Stopping safely ...")
 
     finally:
+        robot.reset()
         robot.disconnect()
         teleop.disconnect()
 

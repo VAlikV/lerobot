@@ -22,3 +22,6 @@ class KukaIiwaConfig(RobotConfig):
     action_pos_scale: int = 1000
     action_angle_scale: int = 100
 
+    reset_pose: list[float] | None = None
+    reset_time_s: float = 3.0
+    reset_fps: int = 30

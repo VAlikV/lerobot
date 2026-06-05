@@ -1,4 +1,6 @@
 import logging
+import time
+from copy import copy
 from functools import cached_property
 
 import cv2
@@ -15,6 +17,10 @@ from .config_kuka_iiwa import KukaIiwaConfig
 logger = logging.getLogger(__name__)
 
 
+GRIPPER_OPEN = 1.0
+GRIPPER_CLOSED = -1.0
+
+
 class KukaIiwa(Robot):
     config_class = KukaIiwaConfig
     name = "kuka_iiwa_follower"
@@ -25,6 +31,7 @@ class KukaIiwa(Robot):
         self.cameras = make_cameras_from_configs(config.cameras)
         self._controller = None
         self._gripper = None
+        self._home_action = None
 
     @cached_property
     def observation_features(self) -> dict:
@@ -75,8 +82,7 @@ class KukaIiwa(Robot):
             raise RuntimeError("KUKA is already connected.")
 
         import kuka_fri_py as fri
-        # from rc10_api.controller import TaskSpaceJogController
-        # from rc10_api.gripper import Gripper
+        from .gripper import Gripper
 
         self._controller = fri.KukaController(
             fri.ControlMode.JOINT_POSITION,
@@ -85,16 +91,15 @@ class KukaIiwa(Robot):
         )
         self._controller.start()
 
-        # self._gripper = Gripper(
-        #     device=self.config.gripper_port,
-        #     baudrate=self.config.gripper_baudrate,
-        # )
+        self._gripper = Gripper(
+            device=self.config.gripper_port,
+            baudrate=self.config.gripper_baudrate,
+        )
 
         for cam in self.cameras.values():
             cam.connect()
 
-        # self.tcp = self._controller.get_current_tcp()
-
+        self._home_action = self._make_home_action()
         logger.info(f"{self} connected.")
 
     @check_if_not_connected
@@ -106,24 +111,7 @@ class KukaIiwa(Robot):
         # current_rot_(2,0), current_rot_(2,1), current_rot_(2,2),
         # force_msg_[0], force_msg_[1], force_msg_[2], force_msg_[3], force_msg_[4], force_msg_[5];
 
-        raw_obs = self._controller.get_observation()
-
-        rot_matrix = np.array([raw_obs[10:13],
-                               raw_obs[13:16],
-                               raw_obs[16:19]])
-        
-        print(rot_matrix)
-        
-        rpy = Rotation.from_matrix(rot_matrix).as_euler("xyz", degrees=False)
-        obs = {
-            "x.pos": float(raw_obs[7]),
-            "y.pos": float(raw_obs[8]),
-            "z.pos": float(raw_obs[9]),
-            "roll.pos": float(rpy[0]),
-            "pitch.pos": float(rpy[1]),
-            "yaw.pos": float(rpy[2]),
-            "gripper.pos": 1.0,
-        }
+        obs = self._get_pose_observation()
         for cam_name, cam in self.cameras.items():
             image = cam.async_read()
             image = cv2.resize(image, self.config.resolution)
@@ -143,20 +131,85 @@ class KukaIiwa(Robot):
         ).as_matrix()
 
         self._controller.set_target(position, rotation)
-        # self._gripper.send(action["gripper.pos"])
+        self._gripper.send(action["gripper.pos"])
+        return action
+
+    @check_if_not_connected
+    def reset(self) -> RobotAction:
+        if self._home_action is None:
+            self._home_action = self._make_home_action()
+
+        action = copy(self._home_action)
+        if self.config.reset_fps <= 0:
+            raise ValueError("`reset_fps` must be greater than 0.")
+
+        dt_s = 1.0 / float(self.config.reset_fps)
+        steps = max(1, int(self.config.reset_time_s * self.config.reset_fps))
+        for _ in range(steps):
+            start_t = time.perf_counter()
+            self.send_action(copy(action))
+            time.sleep(max(dt_s - (time.perf_counter() - start_t), 0.0))
+
+        logger.info("KUKA reset to start pose.")
         return action
 
     def disconnect(self) -> None:
         if self._controller is not None:
             self._controller.stop()
             self._controller = None
-        # if self._gripper is not None:
-        #     self._gripper.close()
-        #     self._gripper = None
+        if self._gripper is not None:
+            self._gripper.close()
+            self._gripper = None
         for cam in self.cameras.values():
             if cam.is_connected:
                 cam.disconnect()
         logger.info(f"{self} disconnected.")
+
+    def _get_pose_observation(self) -> RobotObservation:
+        raw_obs = self._controller.get_observation()
+
+        gripper_pos = GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED
+
+        rot_matrix = np.array([
+            raw_obs[10:13],
+            raw_obs[13:16],
+            raw_obs[16:19],
+        ])
+        rpy = Rotation.from_matrix(rot_matrix).as_euler("xyz", degrees=False)
+        return {
+            "x.pos": float(raw_obs[7]),
+            "y.pos": float(raw_obs[8]),
+            "z.pos": float(raw_obs[9]),
+            "roll.pos": float(rpy[0]),
+            "pitch.pos": float(rpy[1]),
+            "yaw.pos": float(rpy[2]),
+            "gripper.pos": float(gripper_pos),
+        }
+
+    def _make_home_action(self) -> RobotAction:
+        if self.config.reset_pose is None:
+            return self._get_pose_observation()
+
+        if len(self.config.reset_pose) not in (6, 7):
+            raise ValueError(
+                "`reset_pose` must contain [x, y, z, roll, pitch, yaw] "
+                "or [x, y, z, roll, pitch, yaw, gripper]."
+            )
+
+        gripper_pos = (
+            float(self.config.reset_pose[6])
+            if len(self.config.reset_pose) == 7
+            else GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED
+        )
+        return {
+            "x.pos": float(self.config.reset_pose[0]),
+            "y.pos": float(self.config.reset_pose[1]),
+            "z.pos": float(self.config.reset_pose[2]),
+            "roll.pos": float(self.config.reset_pose[3]),
+            "pitch.pos": float(self.config.reset_pose[4]),
+            "yaw.pos": float(self.config.reset_pose[5]),
+            "gripper.pos": float(gripper_pos),
+        }
 
     # def _checkPos(self, position):  # noqa: N802
     #     return position > self.config.limits[2][0]

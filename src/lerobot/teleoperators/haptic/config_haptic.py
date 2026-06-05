@@ -14,4 +14,7 @@ class HapticTeleopConfig(TeleoperatorConfig):
     port: int = 8081
     recv_buffer_size: int = 1024
 
+    haptic_hz: int = 1000
+    control_hz: int = 30
+
     delta_mode: bool = False
