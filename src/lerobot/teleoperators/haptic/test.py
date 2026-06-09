@@ -14,7 +14,7 @@ def main(config: dict[str, Any] | None = None) -> None:
     from lerobot.robots.kuka_iiwa import KukaIiwa, KukaIiwaConfig
 
     robot_cfg = KukaIiwaConfig(urdf_path="src/lerobot/robots/kuka_iiwa/iiwa.urdf",
-                                gripper_port = "/dev/ttyACM1",
+                                gripper_port = "/dev/ttyACM0",
                                 gripper_baudrate = 115200,
                                 cameras = {})
     
@@ -23,60 +23,62 @@ def main(config: dict[str, Any] | None = None) -> None:
     print("Connecting to KUKA iiwa ...")
     robot.connect()
     obs = robot.get_observation()
+
+    print(obs)
     
-    dt = 1.0 / float(FPS)
+#     dt = 1.0 / float(FPS)
 
-    teleop_cfg = HapticTeleopConfig(ip="127.0.0.1",
-                                    port=8081,
-                                    delta_mode=False,
-                                    init_values=[obs["x.pos"],
-                                                 obs["y.pos"],
-                                                 obs["z.pos"],
-                                                 obs["roll.pos"], 
-                                                 obs["pitch.pos"], 
-                                                 obs["yaw.pos"]])
+#     teleop_cfg = HapticTeleopConfig(ip="127.0.0.1",
+#                                     port=8081,
+#                                     delta_mode=False,
+#                                     init_values=[obs["x.pos"],
+#                                                  obs["y.pos"],
+#                                                  obs["z.pos"],
+#                                                  obs["roll.pos"], 
+#                                                  obs["pitch.pos"], 
+#                                                  obs["yaw.pos"]])
     
 
-    print("Connecting haptic ...")
-    teleop = HapticTeleop(teleop_cfg)
-    teleop.connect()
+#     print("Connecting haptic ...")
+#     teleop = HapticTeleop(teleop_cfg)
+#     teleop.connect()
 
-    try:
-        while True:
-            t0 = time.perf_counter()
+#     try:
+#         while True:
+#             t0 = time.perf_counter()
 
-            teleop_action = teleop.get_action()
-            x = float(teleop_action.get("x.pos", 0.0))
-            y = float(teleop_action.get("y.pos", 0.0))
-            z = float(teleop_action.get("z.pos", 0.0))
-            roll = float(teleop_action.get("roll.pos", 0.0))
-            pitch = float(teleop_action.get("pitch.pos", 0.0))
-            yaw = float(teleop_action.get("yaw.pos", 0.0))
-            grip = int(teleop_action.get("gripper.pos", 1))
+#             teleop_action = teleop.get_action()
+#             x = float(teleop_action.get("x.pos", 0.0))
+#             y = float(teleop_action.get("y.pos", 0.0))
+#             z = float(teleop_action.get("z.pos", 0.0))
+#             roll = float(teleop_action.get("roll.pos", 0.0))
+#             pitch = float(teleop_action.get("pitch.pos", 0.0))
+#             yaw = float(teleop_action.get("yaw.pos", 0.0))
+#             grip = int(teleop_action.get("gripper.pos", 1))
 
-            print(x, y, z, roll, pitch, yaw)
+#             print(x, y, z, roll, pitch, yaw)
 
-            robot.send_action(
-                {
-                    "x.pos": x,
-                    "y.pos": y,
-                    "z.pos": z,
-                    "roll.pos": roll,
-                    "pitch.pos": pitch,
-                    "yaw.pos": yaw,
-                    "gripper.pos": float(grip),
-                }
-            )
+#             robot.send_action(
+#                 {
+#                     "x.pos": x,
+#                     "y.pos": y,
+#                     "z.pos": z,
+#                     "roll.pos": roll,
+#                     "pitch.pos": pitch,
+#                     "yaw.pos": yaw,
+#                     "gripper.pos": float(grip),
+#                 }
+#             )
 
-            precise_sleep(max(dt - (time.perf_counter() - t0), 0.0))
+#             precise_sleep(max(dt - (time.perf_counter() - t0), 0.0))
 
-    except KeyboardInterrupt:
-        print("\n\nInterrupted. Stopping safely ...")
+#     except KeyboardInterrupt:
+#         print("\n\nInterrupted. Stopping safely ...")
 
-    finally:
-        robot.reset()
-        robot.disconnect()
-        teleop.disconnect()
+#     finally:
+#         robot.reset()
+#         robot.disconnect()
+#         teleop.disconnect()
 
 if __name__ == "__main__":
     main()

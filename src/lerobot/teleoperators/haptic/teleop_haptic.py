@@ -1,5 +1,6 @@
 import logging
 import socket
+from collections.abc import Sequence
 from queue import Queue
 from typing import Any
 
@@ -48,9 +49,9 @@ class HapticTeleop(Teleoperator):
                 "x.delta": float,
                 "y.delta": float,
                 "z.delta": float,
-                "roll.pos": float,
-                "pitch.pos": float,
-                "yaw.pos": float,
+                "roll.delta": float,
+                "pitch.delta": float,
+                "yaw.delta": float,
                 "gripper.pos": float,
             }
         return {
@@ -172,9 +173,46 @@ class HapticTeleop(Teleoperator):
             self._haptic = None
         logger.info(f"{self} disconnected")
 
-    def reset(self):
-        self._position = self._initial_position()
-        self._rotation = np.eye(3, dtype=np.float64)
+    @check_if_not_connected
+    def reset(
+        self,
+        init_values: Sequence[float] | None = None,
+        gripper_pos: float | None = None,
+    ) -> RobotAction:
+        if init_values is not None:
+            self.config.init_values = init_values
+
+        pos, rot = self._initial_position()
+        self._position = pos
+        self._rotation = Rotation.from_euler("xyz", rot, degrees=False).as_matrix()
+
+        self._drain_gripper_keys()
+        self._read_latest_packet()
+
+        if gripper_pos is not None:
+            self._gripper_pos = float(gripper_pos)
+
+        roll, pitch, yaw = Rotation.from_matrix(self._rotation).as_euler("xyz", degrees=False)
+        if self.config.delta_mode:
+            return {
+                "x.delta": 0.0,
+                "y.delta": 0.0,
+                "z.delta": 0.0,
+                "roll.delta": float(roll),
+                "pitch.delta": float(pitch),
+                "yaw.delta": float(yaw),
+                "gripper.pos": float(self._gripper_pos),
+            }
+
+        return {
+            "x.pos": float(self._position[0]),
+            "y.pos": float(self._position[1]),
+            "z.pos": float(self._position[2]),
+            "roll.pos": float(roll),
+            "pitch.pos": float(pitch),
+            "yaw.pos": float(yaw),
+            "gripper.pos": float(self._gripper_pos),
+        }
 
     def _start_gripper_keyboard_listener(self) -> None:
         try:
@@ -188,9 +226,9 @@ class HapticTeleop(Teleoperator):
                 return
 
             key_char = key.char.lower()
-            if key_char == "o":
+            if key_char == "x":
                 self._gripper_key_queue.put(GRIPPER_OPEN)
-            elif key_char == "c":
+            elif key_char == "z":
                 self._gripper_key_queue.put(GRIPPER_CLOSED)
 
         try:
@@ -201,7 +239,7 @@ class HapticTeleop(Teleoperator):
             logger.warning("Haptic gripper keyboard control disabled: failed to start listener (%s).", exc)
             return
 
-        logger.info("Haptic gripper keyboard control enabled: 'o' opens, 'c' closes.")
+        logger.info("Haptic gripper keyboard control enabled: 'x' opens, 'z' closes.")
 
     def _drain_gripper_keys(self) -> None:
         while not self._gripper_key_queue.empty():

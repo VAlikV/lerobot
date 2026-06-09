@@ -19,12 +19,14 @@ rot = np.array([obs[10:13],
                 obs[16:19]])
 
 controller.set_target(pos, rot)
+print(pos)
 
 while 1:
     obs = controller.get_observation()
     controller.set_target(pos, rot)
 
     time.sleep(0.1)
+
 
 
 controller.stop()

@@ -22,3 +22,6 @@ class Gripper:
     def close(self):
         if self._serial.is_open:
             self._serial.close()
+
+# def main():
+#     gripper = Gripper(device="/dev/ttyACM1")

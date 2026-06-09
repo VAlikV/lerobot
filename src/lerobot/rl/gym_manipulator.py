@@ -58,6 +58,7 @@ from lerobot.robots import (  # noqa: F401
     so_follower,
 )
 from lerobot.robots import rc10 as _rc10_register  # noqa: F401  # register RC10RobotConfig
+from lerobot.robots import kuka_iiwa as _kuka_iiwa_register  # noqa: F401  # register KukaIiwaConfig
 from lerobot.robots import ur10 as _ur10_register  # noqa: F401  # register UR10RobotConfig
 from lerobot.robots.robot import Robot
 from lerobot.robots.so_follower.robot_kinematic_processor import (
@@ -94,6 +95,9 @@ class DatasetConfig:
     num_episodes_to_record: int = 5
     replay_episode: int | None = None
     push_to_hub: bool = False
+    # "delta" records the action sent to env.step().
+    # "absolute" records the env's current absolute target, when the env supports it.
+    action_recording_mode: str = "delta"
 
 
 @dataclass
@@ -416,6 +420,48 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
         teleop_device.connect()
         return env, teleop_device
 
+    # KUKA iiwa real robot environment (task-space target streaming in the robot driver)
+    if cfg.name in ("kuka", "kuka_iiwa"):
+        from lerobot.robots.kuka_iiwa import KukaIiwa, KukaIiwaRobotEnv, KukaIiwaRobotEnvConfig
+
+        assert cfg.robot is not None, "Robot config must be provided for KUKA iiwa environment"
+        assert cfg.teleop is not None, "Teleop config must be provided for KUKA iiwa environment"
+
+        robot = KukaIiwa(cfg.robot)
+        robot.connect()
+
+        ik_cfg = cfg.processor.inverse_kinematics
+        reset_cfg = cfg.processor.reset
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+        use_yaw = bool(getattr(ik_cfg, "use_yaw", False)) if ik_cfg else False
+
+        home_tcp = list(reset_cfg.fixed_reset_joint_positions) if reset_cfg \
+                   else [0.5, 0.0, 0.4, 0.0, 0.0, 0.0]
+
+        env_config = KukaIiwaRobotEnvConfig(
+            ee_step_sizes=ik_cfg.end_effector_step_sizes if ik_cfg
+                          else {"x": 0.001, "y": 0.001, "z": 0.001},
+            ee_bounds_min=ik_cfg.end_effector_bounds["min"] if ik_cfg and ik_cfg.end_effector_bounds
+                          else [-0.5, -0.5, 0.05],
+            ee_bounds_max=ik_cfg.end_effector_bounds["max"] if ik_cfg and ik_cfg.end_effector_bounds
+                          else [0.5, 0.5, 0.7],
+            fixed_roll=home_tcp[3] if len(home_tcp) > 3 else 0.0,
+            fixed_pitch=home_tcp[4] if len(home_tcp) > 4 else 0.0,
+            fixed_yaw=home_tcp[5] if len(home_tcp) > 5 else 0.0,
+            home_tcp=home_tcp,
+            reset_time_s=reset_cfg.reset_time_s if reset_cfg else 5.0,
+            reset_fps=getattr(cfg.robot, "reset_fps", 30),
+            use_gripper=use_gripper,
+            use_yaw=use_yaw,
+            randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
+            randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
+        )
+        env = KukaIiwaRobotEnv(robot, env_config)
+
+        teleop_device = make_teleoperator_from_config(cfg.teleop)
+        teleop_device.connect()
+        return env, teleop_device
+
     # Real robot environment (SO101 and other motor-bus robots)
     assert cfg.robot is not None, "Robot config must be provided for real robot environment"
     assert cfg.teleop is not None, "Teleop config must be provided for real robot environment"
@@ -523,7 +569,7 @@ def make_processors(
             steps=action_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
         )
 
-    if cfg.name == "ur10":
+    if cfg.name in ("ur10", "kuka", "kuka_iiwa"):
         from lerobot.robots.ur10 import UR10GripperPenaltyProcessorStep
 
         use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
@@ -534,7 +580,8 @@ def make_processors(
         use_yaw = bool(getattr(ik_cfg, "use_yaw", False)) if ik_cfg else False
 
         # Action pipeline: teleop reads + intervention handling + tensor to numpy.
-        # No Python-side IK - UR10e's controller does IK at 500 Hz when servoL is called.
+        # No Python-side IK here: UR10 and KUKA envs consume task-space delta actions
+        # directly and their robot drivers stream absolute targets to the hardware.
         action_pipeline_steps = [
             AddTeleopActionAsComplimentaryDataStep(teleop_device=teleop_device),
             AddTeleopEventsAsInfoStep(teleop_device=teleop_device),
@@ -566,8 +613,8 @@ def make_processors(
                 TimeLimitProcessorStep(max_episode_steps=int(cfg.processor.reset.control_time_s * cfg.fps))
             )
 
-        # UR10-specific discrete-gripper penalty. Inserted before AddBatchDimension so the
-        # state vector is 1-D and the action is a flat torch.Tensor - simplifies indexing.
+        # Discrete-gripper penalty. Inserted before AddBatchDimension so the state vector
+        # is 1-D and the action is a flat torch.Tensor - simplifies indexing.
         if (
             cfg.processor.gripper is not None
             and cfg.processor.gripper.use_gripper
@@ -788,7 +835,9 @@ def control_loop(
     print("- Press Ctrl+C to exit")
 
     # Reset environment and processors
+    log_say("Reset the environment", play_sounds=cfg.mode == "record")
     obs, info = env.reset()
+    log_say("Reset the environment done", play_sounds=cfg.mode == "record")
     complementary_data = (
         {"raw_joint_positions": info.pop("raw_joint_positions")} if "raw_joint_positions" in info else {}
     )
@@ -803,8 +852,22 @@ def control_loop(
     use_gripper = cfg.env.processor.gripper.use_gripper if cfg.env.processor.gripper is not None else True
 
     dataset = None
+    pending_episode_buffers = []
     if cfg.mode == "record":
-        if teleop_device:
+        action_recording_mode = cfg.dataset.action_recording_mode
+        if action_recording_mode not in ("delta", "absolute"):
+            raise ValueError(
+                "`dataset.action_recording_mode` must be either 'delta' or 'absolute'; "
+                f"got {action_recording_mode!r}"
+            )
+
+        if action_recording_mode == "absolute":
+            if not hasattr(env, "get_recording_action_features"):
+                raise ValueError(
+                    f"{type(env).__name__} does not support absolute action recording."
+                )
+            action_features = env.get_recording_action_features(action_recording_mode)
+        elif teleop_device:
             action_features = teleop_device.action_features
         else:
             # Derive shape from the env's action_space so this fallback adapts to yaw
@@ -855,6 +918,11 @@ def control_loop(
     episode_idx = 0
     episode_step = 0
     episode_start_time = time.perf_counter()
+    if cfg.mode == "record":
+        log_say(
+            f"Recording episode {episode_idx + 1} of {cfg.dataset.num_episodes_to_record}",
+            play_sounds=True,
+        )
 
     while episode_idx < cfg.dataset.num_episodes_to_record:
         # print(f"Starting episode {episode_idx+1}/{cfg.dataset.num_episodes_to_record}...", end="\r", flush=True)
@@ -927,10 +995,15 @@ def control_loop(
                 for k, v in transition[TransitionKey.OBSERVATION].items()
                 if isinstance(v, torch.Tensor)
             }
-            # Use teleop_action if available, otherwise use the action from the transition
-            action_to_record = transition[TransitionKey.COMPLEMENTARY_DATA].get(
-                "teleop_action", transition[TransitionKey.ACTION]
-            )
+            if cfg.dataset.action_recording_mode == "absolute":
+                action_to_record = env.get_recording_action(cfg.dataset.action_recording_mode)
+            else:
+                # Use teleop_action if available, otherwise use the action from the transition.
+                action_to_record = transition[TransitionKey.COMPLEMENTARY_DATA].get(
+                    "teleop_action", transition[TransitionKey.ACTION]
+                )
+            if not isinstance(action_to_record, torch.Tensor):
+                action_to_record = torch.as_tensor(action_to_record, dtype=torch.float32)
             frame = {
                 **observations,
                 ACTION: action_to_record.cpu(),
@@ -958,35 +1031,54 @@ def control_loop(
 
             if dataset is not None:
                 if transition[TransitionKey.INFO].get(TeleopEvents.RERECORD_EPISODE, False):
-                    logging.info(f"Re-recording episode {episode_idx}")
+                    log_say(f"Re-recording episode {episode_idx}", play_sounds=True)
                     dataset.clear_episode_buffer()
                     episode_idx -= 1
+                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
                 else:
-                    logging.info(f"Saving episode {episode_idx}")
-                    dataset.save_episode()
+                    log_say(f"Episode {episode_idx} recorded", play_sounds=True)
+                    pending_episode_buffers.append(dataset.episode_buffer)
+                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
 
             # Reset for new episode
-            obs, info = env.reset()
-            env_processor.reset()
-            action_processor.reset()
+            if episode_idx < cfg.dataset.num_episodes_to_record:
+                log_say("Reset the environment", play_sounds=cfg.mode == "record")
+                obs, info = env.reset()
+                log_say("Reset the environment done", play_sounds=cfg.mode == "record")
+                env_processor.reset()
+                action_processor.reset()
 
-            transition = create_transition(observation=obs, info=info)
-            transition = env_processor(transition)
+                transition = create_transition(observation=obs, info=info)
+                transition = env_processor(transition)
+                log_say(
+                    f"Recording episode {episode_idx + 1} of {cfg.dataset.num_episodes_to_record}",
+                    play_sounds=cfg.mode == "record",
+                )
 
         # Maintain fps timing
         precise_sleep(max(dt - (time.perf_counter() - step_start_time), 0.0))
 
+    # Disconnect the robot before heavy dataset writes/video encoding. Saving an episode can
+    # block long enough to starve real-time robot keepalive loops.
+    env.close()
+
     # Bug fix: we need to handle the saving and pushing to hub separately
     if dataset is not None:
+        if pending_episode_buffers:
+            log_say("Robot disconnected. Saving recorded episodes", play_sounds=cfg.mode == "record")
+        for idx, episode_buffer in enumerate(pending_episode_buffers, start=1):
+            log_say(
+                f"Saving episode {idx} of {len(pending_episode_buffers)}",
+                play_sounds=cfg.mode == "record",
+            )
+            dataset.save_episode(episode_data=episode_buffer)
         logging.info("Finalizing dataset before pushing to hub")
         dataset.finalize()
     if cfg.dataset.push_to_hub:
         logging.info("Pushing dataset to hub")
         dataset.push_to_hub()
 
-    # Bug fix: we need to close the env after the recording is complete
-    env.close()
-    logging.info("Recording complete")
+    log_say("Recording complete", play_sounds=cfg.mode == "record")
 
 
 def replay_trajectory(

@@ -25,3 +25,5 @@ class KukaIiwaConfig(RobotConfig):
     reset_pose: list[float] | None = None
     reset_time_s: float = 3.0
     reset_fps: int = 30
+
+    control_hz: int = 100
