@@ -647,6 +647,7 @@ def act_with_policy(
             except (TypeError, ValueError):
                 pass
 
+        is_intervention = bool(intervention_info.get(TeleopEvents.IS_INTERVENTION, False))
         complementary_info = {
             "discrete_penalty": torch.tensor(
                 [new_transition[TransitionKey.COMPLEMENTARY_DATA].get("discrete_penalty", 0.0)]

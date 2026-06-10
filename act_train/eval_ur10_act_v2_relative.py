@@ -1,31 +1,26 @@
-"""Closed-loop inference of a trained ACT policy on the UR10 — v2 (RC10-style).
+"""Closed-loop inference of an ACT policy trained on the HILSERL-converted dataset.
 
-Differences from ``eval_ur10_act.py``
-=====================================
-v1 evaluated a delta-action policy: the policy output a `[dx, dy, dz, dyaw,
-gripper_cmd]` vector that the env's `step()` accumulated into the streaming
-target. That layout collapsed at fine-alignment phases (see
-``act_train/audit_dataset.py`` for the forensic trace).
+How this differs from eval_ur10_act_v2.py
+==========================================
+The policy here was trained on the HILSERL dataset converted by
+``hilserl_to_act.py``.  During conversion, delta actions are turned into
+*relative absolute targets*:
 
-v2 evaluates an absolute-target policy: the policy outputs a `[x.pos, y.pos,
-z.pos, yaw.pos, gripper.pos]` dict (matching the v2 dataset's action schema),
-which is fed directly to ``env.set_act_target(...)`` — no delta accumulation,
-no action gain, no gripper-state-to-command translation in the script (all of
-that logic lives inside ``set_act_target``).
+    action = [tcp_x_rel + delta_x,  tcp_y_rel + delta_y,  tcp_z_rel + delta_z,
+              yaw_offset + delta_yaw,  gripper_binary]
 
-The loop body is therefore dramatically simpler — it's basically:
+where ``tcp_xyz_rel`` and ``yaw_offset`` are already in the 17-D state vector
+(relative to the per-episode initial pose captured by the env at reset).
 
-    obs   = env.get_act_observation()
-    batch = preprocess(build_inference_frame(obs, …))
-    act   = postprocess(policy.select_action(batch))
-    env.set_act_target(make_robot_action(act, dataset_features))
-
-…mirroring ``act_train/act_using_example.py`` (RC10's working eval script)
-beat-for-beat.
+At inference we therefore:
+  1. Use the *same* 17-D HILSERL state from env_processor (no swap to 11-D).
+  2. Add ``env.robot._initial_tcp_xyz`` to the policy's xyz output to convert
+     the relative target back to absolute base-frame before calling
+     ``set_act_target()`` (which expects absolute xyz).
 
 Usage
 =====
-    python act_train/eval_ur10_act_v2.py
+    python act_train/eval_ur10_act_v2_hilserl.py
 """
 
 from __future__ import annotations
@@ -57,12 +52,14 @@ logger = logging.getLogger(__name__)
 
 
 # -- user-tunable ---------------------------------------------------------------
-MODEL_DIR = "outputs/act/ur10/pcb_act_3cams_yaw_from_hilserl/last"
-DATASET_REPO_ID = "local/pcb_act_3cams_yaw_from_hilserl_absact"   # for dataset stats (normalization)
+# step_7500 -  80% success rate
+# step 10000 - 
+MODEL_DIR = "outputs/act/ur10/local/pcb_act_3cams_yaw_relative_2finetune/step_12500"
+DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative"   # for dataset stats (normalization)
 CONFIG_PATH = "src/lerobot/rl/ur10_env_3cams_yaw_hilserl.json"
 NUM_EPISODES = 30
-EPISODE_TIME_S = 30      # safety upper bound; user ends earlier via gamepad
-RESET_TIME_S = 10        # total between-episode budget (motion + hold-at-home)
+EPISODE_TIME_S = 20      # safety upper bound; user ends earlier via gamepad
+RESET_TIME_S = 5         # motion-only budget for auto_reset_to_home (env.reset handles the grip window)
 RESET_SPEED_MPS = 0.1    # auto-reset linear velocity, m/s (matches env.reset's moveL)
 FPS = 10
 # -------------------------------------------------------------------------------
@@ -95,55 +92,52 @@ def main() -> None:
         policy.config.temporal_ensemble_coeff,
     )
 
-    # ---- env + processors --------------------------------------------------
-    # We DO use env_processor here so the policy sees the same cropped/resized
-    # images the training dataset was built with (the cropping config lives in
-    # cfg.processor.image_preprocessing — applied by ImageCropResizeProcessorStep).
-    # We don't use the returned `obs` directly; instead we override the state
-    # slot with the v2 11-D ACT state from env.get_act_observation() before
-    # passing to the policy. This keeps train/eval frame-for-frame consistent.
-    env, teleop_device = make_robot_env(cfg.env)
-    env_processor, _action_processor = make_processors(env, teleop_device, cfg.env, str(device))
-    obs, _info = env.reset()
-    env_processor.reset()
-
-
-    def _build_obs_for_policy() -> dict:
-        """Pull a single observation through env_processor (cropped images +
-        17-D state), then swap the state for the v2 11-D ACT state. Returns
-        the obs dict ready to feed into ``policy.select_action`` after
-        normalization."""
-        raw = env._augment_observation(env.robot.get_observation())
-        tr = env_processor(create_transition(
-            observation=raw, info={TeleopEvents.IS_INTERVENTION: False},
-        ))
-        v2_state = env.get_act_observation()["agent_pos"]
-        # env_processor's AddBatchDimensionProcessorStep emits (1, D); match it.
-        tr[TransitionKey.OBSERVATION][OBS_STATE] = (
-            torch.from_numpy(v2_state.copy()).unsqueeze(0).to(device).float()
-        )
-        return {
-            k: v for k, v in tr[TransitionKey.OBSERVATION].items()
-            if k in policy.config.input_features
-        }
-
+    # Pre-initialise so the finally block can always reference them safely,
+    # even if make_robot_env or env.reset() raise before they are assigned.
+    env = None
+    teleop_device = None
     episode_idx = 0
-    episode_step = 0
-    episode_start = time.perf_counter()
-    logger.info(
-        "Inference at %d Hz for %d episodes. Triangle/Cross = success/fail; Ctrl+C to exit.",
-        FPS, NUM_EPISODES,
-    )
-    logger.info("--- Episode %d ---", episode_idx + 1)
 
+    # ---- env + processors --------------------------------------------------
+    # The try block starts HERE — before make_robot_env — so that any exception
+    # (including KeyboardInterrupt during the 15-second grip window inside
+    # env.reset()) is guaranteed to reach `finally: env.close()`.  Without this,
+    # a Ctrl+C during the initial reset leaves the RTDE TCP connections open on
+    # the robot and the next run fails with "RTDE input registers already in use".
     try:
+        env, teleop_device = make_robot_env(cfg.env)
+        env_processor, _action_processor = make_processors(env, teleop_device, cfg.env, str(device))
+        obs, _info = env.reset()
+        env_processor.reset()
+
+        initial_tcp_xyz = torch.tensor(
+            env.robot._initial_tcp_xyz[:3], dtype=torch.float32, device=device
+        )
+
+        def _build_obs_for_policy() -> dict:
+            """Pull a single observation through env_processor (cropped images +
+            17-D HILSERL state). Returns the obs dict ready for policy.select_action."""
+            raw = env._augment_observation(env.robot.get_observation())
+            tr = env_processor(create_transition(
+                observation=raw, info={TeleopEvents.IS_INTERVENTION: False},
+            ))
+            return {
+                k: v for k, v in tr[TransitionKey.OBSERVATION].items()
+                if k in policy.config.input_features
+            }
+
+        episode_step = 0
+        episode_start = time.perf_counter()
+        logger.info(
+            "Inference at %d Hz for %d episodes. Triangle/Cross = success/fail; Ctrl+C to exit.",
+            FPS, NUM_EPISODES,
+        )
+        logger.info("--- Episode %d ---", episode_idx + 1)
+
         while episode_idx < NUM_EPISODES:
             t0 = time.perf_counter()
 
-            # 1. Pull the observation through env_processor (cropped/resized
-            #    images) and swap the state for the v2 11-D ACT state — see
-            #    _build_obs_for_policy above for the rationale. Already batched
-            #    on the right device.
+            # 1. Build observation (17-D HILSERL state + cropped images).
             obs_batch = _build_obs_for_policy()
 
             # 2. Normalize, predict, unnormalize.
@@ -152,13 +146,17 @@ def main() -> None:
                 action_tensor = policy.select_action(obs_batch)
             action_tensor = postprocess(action_tensor)
 
-            # 4. Convert the policy's output tensor into a named dict matching the
-            #    dataset's action schema (`{x.pos, y.pos, z.pos, yaw.pos, gripper.pos}`).
+            # 3. The policy outputs xyz RELATIVE to the per-episode initial TCP
+            #    pose (matching the dataset's action convention).  Convert to
+            #    absolute base-frame before handing to set_act_target().
+            action_tensor = action_tensor.clone()
+            action_tensor[0, :3] += initial_tcp_xyz.to(action_tensor.device)
+
+            # 4. Build named dict matching action schema (x.pos, y.pos, …).
             action_dict = make_robot_action(action_tensor, metadata.features)
 
-            # 5. Drive the robot directly with the absolute target. All bounds /
-            #    rotation / gripper-translation logic lives inside set_act_target,
-            #    so this script stays minimal and intent-revealing.
+            # 5. Drive the robot. Bounds / rotation / gripper logic all live
+            #    inside set_act_target, so nothing extra needed here.
             env.set_act_target(action_dict)
 
             episode_step += 1
@@ -198,12 +196,23 @@ def main() -> None:
                 if episode_idx >= NUM_EPISODES:
                     break
 
-                # Between episodes: bypass servoStop via interpolated set_target_pose.
-                # phase-1.5 fix inside auto_reset_to_home zeroes env.target_yaw, so the
-                # next episode's first commanded yaw is 0 (no stale-state snap).
+                # Step 1: gracefully stop servoL and return to nominal home
+                # without triggering the servoStop freeze.
                 auto_reset_to_home(env, dt, RESET_TIME_S, RESET_SPEED_MPS, FPS)
-                env_processor.reset()  # drop any per-episode state inside the image pipeline
-                policy.reset()  # clear ACT chunk queue + temporal ensembler if any
+
+                # Step 2: full env.reset() — randomises position, opens grip
+                # window (reset_time_s from config) so operator can re-grip,
+                # and calls capture_baselines() for the new episode's home pose.
+                env.reset()
+
+                # Re-read initial_tcp_xyz: home is randomised so each episode
+                # has a different baseline for the relative→absolute conversion.
+                initial_tcp_xyz = torch.tensor(
+                    env.robot._initial_tcp_xyz[:3], dtype=torch.float32, device=device
+                )
+
+                env_processor.reset()
+                policy.reset()
                 episode_step = 0
                 episode_start = time.perf_counter()
                 logger.info("--- Episode %d ---", episode_idx + 1)
@@ -216,10 +225,11 @@ def main() -> None:
         logger.exception("Inference failed")
     finally:
         logger.info("Completed %d episodes", episode_idx)
-        try:
-            env.close()
-        except Exception:
-            logger.exception("env.close failed")
+        if env is not None:
+            try:
+                env.close()
+            except Exception:
+                logger.exception("env.close failed")
         if teleop_device is not None:
             try:
                 teleop_device.disconnect()

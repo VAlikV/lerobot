@@ -504,6 +504,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             use_yaw=use_yaw,
             randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
             randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
+            randomization_yaw=reset_cfg.randomization_yaw if reset_cfg else 0.0,
         )
         env = UR10RobotEnv(robot, env_config)
         # The env starts the streaming thread internally using cfg.stream_frequency_hz;
@@ -511,6 +512,11 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
 
         teleop_device = make_teleoperator_from_config(cfg.teleop)
         teleop_device.connect()
+
+        # Wire the teleop device into the env so the operator can control the gripper
+        # during the reset window (gripper opens automatically, operator grips PCB).
+        env.set_reset_teleop(teleop_device)
+
         return env, teleop_device
 
     # Real robot environment (SO101 and other motor-bus robots)
@@ -929,8 +935,10 @@ def step_env_and_process_transition(
     terminated = terminated or processed_action_transition[TransitionKey.DONE]
     truncated = truncated or processed_action_transition[TransitionKey.TRUNCATED]
     complementary_data = processed_action_transition[TransitionKey.COMPLEMENTARY_DATA].copy()
-    new_info = processed_action_transition[TransitionKey.INFO].copy()
-    new_info.update(info)
+    # Merge: action-processor info (teleop flags like IS_INTERVENTION) takes
+    # priority over the env.step() info dict, which always returns IS_INTERVENTION=False
+    # because the env has no visibility into whether the action was from a human or policy.
+    new_info = {**info, **processed_action_transition[TransitionKey.INFO]}
 
     new_transition = create_transition(
         observation=obs,
