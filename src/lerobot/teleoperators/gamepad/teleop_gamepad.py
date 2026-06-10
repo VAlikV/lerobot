@@ -55,6 +55,27 @@ class GamepadTeleop(Teleoperator):
         self.robot_type = config.type
 
         self.gamepad = None
+        self._pending_gripper_state_fn = None
+        # Persistent gripper-width target in [-1, 1]; only used when
+        # config.record_gripper_width is True. close = -1, open = +1
+        # (uniform with the other action dims). Init to OPEN so the recorded
+        # command stream matches the sim's default-open state before the user
+        # ever presses the toggle.
+        self._gripper_width_target: float = 1.0
+        # Tracks intervention edge so we can re-seed the persistent gripper
+        # target from live env state when the user starts intervening. Without
+        # this sync the stale target (often +1 = open from reset) would force
+        # the gripper open even if the policy was mid-grasp.
+        self._prev_intervention: bool = False
+
+    def set_gripper_state_fn(self, fn) -> None:
+        """Register a callable that returns the env's current gripper state in
+        [0,1] (0=open, 1=closed). Used by the R2 toggle to emit the opposite
+        of the live state so it never desyncs from the policy/sim. Safe to
+        call before or after ``connect()``."""
+        self._pending_gripper_state_fn = fn
+        if self.gamepad is not None:
+            self.gamepad.gripper_state_fn = fn
 
     @property
     def action_features(self) -> dict:
@@ -83,13 +104,36 @@ class GamepadTeleop(Teleoperator):
         else:
             from .gamepad_utils import GamepadController as Gamepad
 
-        self.gamepad = Gamepad()
+        # Only pass stage_advance_button to the pygame controller — the HID
+        # path doesn't support configurable buttons yet.
+        if sys.platform == "darwin":
+            self.gamepad = Gamepad()
+        else:
+            self.gamepad = Gamepad(stage_advance_button=self.config.stage_advance_button)
+        if self._pending_gripper_state_fn is not None:
+            self.gamepad.gripper_state_fn = self._pending_gripper_state_fn
         self.gamepad.start()
 
     @check_if_not_connected
     def get_action(self) -> RobotAction:
         # Update the controller to get fresh inputs
         self.gamepad.update()
+
+        # On intervention edge (False->True), sync the persistent width target
+        # from live env gripper state so the FIRST intervention step does not
+        # snap the gripper to the stale latched value. gripper_state_fn returns
+        # [0,1] (0=open, 1=closed); width target convention is +1=open, -1=close.
+        cur_interv = bool(getattr(self.gamepad, "intervention_flag", False))
+        if cur_interv and not self._prev_intervention:
+            fn = getattr(self.gamepad, "gripper_state_fn", None)
+            if fn is not None:
+                try:
+                    live = float(fn())  # [0,1]
+                    live = max(0.0, min(1.0, live))
+                    self._gripper_width_target = 1.0 - 2.0 * live
+                except Exception:
+                    pass
+        self._prev_intervention = cur_interv
 
         # Get movement deltas from the controller. When use_yaw=True, the driver also reads
         # right stick X and returns a 4-tuple; otherwise the legacy 3-tuple is returned so
@@ -99,23 +143,6 @@ class GamepadTeleop(Teleoperator):
         else:
             delta_x, delta_y, delta_z = self.gamepad.get_deltas()
             delta_yaw = 0.0
-
-        # Apply symmetric deadzone with linear rescale outside it. Eliminates resting-stick
-        # drift and spring-back overshoot that would otherwise accumulate into latched targets.
-        # dz = max(0.0, float(self.config.deadzone))
-        # if dz > 0.0 and dz < 1.0:
-        #     scale = 1.0 / (1.0 - dz)
-
-        #     def _dz(v: float) -> float:
-        #         if v > dz:
-        #             return (v - dz) * scale
-        #         if v < -dz:
-        #             return (v + dz) * scale
-        #         return 0.0
-
-        #     delta_x = _dz(float(delta_x))
-        #     delta_y = _dz(float(delta_y))
-        #     delta_z = _dz(float(delta_z))
 
         # Apply per-axis sign flips so the same physical stick direction maps to the
         # operator's intuitive forward/back/left/right/up/down regardless of the robot's
@@ -135,10 +162,23 @@ class GamepadTeleop(Teleoperator):
         if self.config.use_yaw:
             action_dict["delta_yaw"] = np.float32(syaw * delta_yaw)
 
+        if self.config.use_yaw and hasattr(self.gamepad, "get_yaw_delta"):
+            action_dict["delta_yaw"] = float(self.gamepad.get_yaw_delta())
+
         # Default gripper action is to stay
         if self.config.use_gripper:
             gripper_command = self.gamepad.gripper_command()
-            action_dict["gripper"] = gripper_action_map[gripper_command]
+            if getattr(self.config, "record_gripper_width", False):
+                # Continuous-width mode: emit a [-1, +1] target uniform with
+                # the other action dims. close → -1, open → +1, stay → hold
+                # last. Persistent so policy commands are stable.
+                if gripper_command == "close":
+                    self._gripper_width_target = -1.0
+                elif gripper_command == "open":
+                    self._gripper_width_target = 1.0
+                action_dict["gripper"] = float(self._gripper_width_target)
+            else:
+                action_dict["gripper"] = gripper_action_map[gripper_command]
 
         return action_dict
 
@@ -160,6 +200,7 @@ class GamepadTeleop(Teleoperator):
                 TeleopEvents.TERMINATE_EPISODE: False,
                 TeleopEvents.SUCCESS: False,
                 TeleopEvents.RERECORD_EPISODE: False,
+                TeleopEvents.STAGE_ADVANCE: False,
             }
 
         # Update gamepad state to get fresh inputs
@@ -177,12 +218,29 @@ class GamepadTeleop(Teleoperator):
         success = episode_end_status == TeleopEvents.SUCCESS
         rerecord_episode = episode_end_status == TeleopEvents.RERECORD_EPISODE
 
+        stage_advance = False
+        if hasattr(self.gamepad, "consume_stage_advance"):
+            stage_advance = bool(self.gamepad.consume_stage_advance())
+
         return {
             TeleopEvents.IS_INTERVENTION: is_intervention,
             TeleopEvents.TERMINATE_EPISODE: terminate_episode,
             TeleopEvents.SUCCESS: success,
             TeleopEvents.RERECORD_EPISODE: rerecord_episode,
+            TeleopEvents.STAGE_ADVANCE: stage_advance,
         }
+
+    def reset_episode_state(self) -> None:
+        """Clear latched per-episode state on the underlying controller so
+        a new episode starts neutral. Safe to call before ``connect()``
+        (no-op if the controller isn't initialized yet). Called by
+        ``gym_manipulator.control_loop`` after each ``env.reset()``."""
+        if self.gamepad is not None and hasattr(self.gamepad, "reset_episode_state"):
+            self.gamepad.reset_episode_state()
+        # Re-arm the continuous-width gripper target to OPEN so the previous
+        # episode's last-latched state does not carry over into a fresh
+        # episode.
+        self._gripper_width_target = 1.0
 
     def disconnect(self) -> None:
         """Disconnect from the gamepad."""

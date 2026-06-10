@@ -117,16 +117,20 @@ class TrainPipelineConfig(HubMixin):
                 self.job_name = f"{self.env.type}_{self.policy.type}"
 
         if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
-            raise FileExistsError(
-                f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
-                f"Please change your output directory so that {self.output_dir} is not overwritten."
-            )
+            # HIL-SERL: learner and actor share output_dir. The first process to start creates
+            # the dir; the second must not fail. Set LEROBOT_SKIP_OUTPUT_DIR_CHECK=1 for that
+            # second process (typically the actor) to bypass this safeguard.
+            if os.environ.get("LEROBOT_SKIP_OUTPUT_DIR_CHECK") != "1":
+                raise FileExistsError(
+                    f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
+                    f"Please change your output directory so that {self.output_dir} is not overwritten."
+                )
         elif not self.output_dir:
             now = dt.datetime.now()
             train_dir = f"{now:%Y-%m-%d}/{now:%H-%M-%S}_{self.job_name}"
             self.output_dir = Path("outputs/train") / train_dir
 
-        if isinstance(self.dataset.repo_id, list):
+        if self.dataset is not None and isinstance(self.dataset.repo_id, list):
             raise NotImplementedError("LeRobotMultiDataset is not currently implemented.")
 
         if not self.use_policy_training_preset and (self.optimizer is None or self.scheduler is None):
@@ -211,3 +215,12 @@ class TrainRLServerPipelineConfig(TrainPipelineConfig):
     # NOTE: In RL, we don't need an offline dataset
     # TODO: Make `TrainPipelineConfig.dataset` optional
     dataset: DatasetConfig | None = None  # type: ignore[assignment] # because the parent class has made it's type non-optional
+    # Subsample the offline dataset to keep every Nth frame within each episode when
+    # populating the offline replay buffer. Builds k-step transitions: action = a[i],
+    # reward = sum(r[i..i+stride-1]), next_state = s[i+stride] (or end-of-episode).
+    # 1 = no subsampling.
+    offline_dataset_stride: int = 1
+    # If > 0, drop frames where ||action[:4]||_inf < threshold from the offline
+    # buffer (teleop-pause idle frames pull the actor toward zero-action and
+    # bias Q-learning toward stalling). 0 = keep all frames.
+    offline_drop_idle_threshold: float = 0.0

@@ -15,6 +15,7 @@
 # limitations under the License.
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -71,6 +72,7 @@ from lerobot.teleoperators import (
     gamepad,  # noqa: F401
     keyboard,  # noqa: F401
     make_teleoperator_from_config,
+    ps4_joystick,  # noqa: F401  # registers `ps4_joystick` draccus choice
     so_leader,  # noqa: F401
 )
 from lerobot.teleoperators.teleoperator import Teleoperator
@@ -94,6 +96,16 @@ class DatasetConfig:
     num_episodes_to_record: int = 5
     replay_episode: int | None = None
     push_to_hub: bool = False
+    # If True and the target dataset directory already exists, delete it before
+    # creating a fresh one. Useful for iterating on recording configs without
+    # having to rm -rf the HF cache between attempts. Off by default to avoid
+    # accidental data loss.
+    overwrite: bool = False
+    # If True, open the existing dataset at --dataset.root (or the HF cache)
+    # and append new episodes to it instead of creating a fresh one. Mutually
+    # exclusive with --dataset.overwrite. num_episodes_to_record counts the
+    # episodes for THIS session only (not total).
+    resume: bool = False
 
 
 @dataclass
@@ -104,6 +116,8 @@ class GymManipulatorConfig:
     dataset: DatasetConfig
     mode: str | None = None  # Either "record", "replay", None
     device: str = "cpu"
+    # If True, open a Rerun viewer and stream observation/action data every step.
+    rerun: bool = False
 
 
 def reset_follower_position(robot_arm: Robot, target_position: np.ndarray) -> None:
@@ -330,6 +344,89 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
 
         return env, None
 
+    # Custom MuJoCo sim (simulator_for_IL_RL, UR10e+2F85, 3-obj nesting).
+    # Uses the same flat gym-hil-style obs / 3D-delta action, so the gym_hil
+    # processor pipeline applies unchanged.
+    if cfg.name == "sim_assembling":
+        assert cfg.robot is None, "sim_assembling env has no physical robot"
+        import lerobot.envs.sim_assembling  # noqa: F401  # registers gym id
+
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+        control_time_s = cfg.processor.reset.control_time_s if cfg.processor.reset is not None else 15.0
+        reset_time_s = cfg.processor.reset.reset_time_s if cfg.processor.reset is not None else 0.0
+        max_ep = max(1, int(round(control_time_s * cfg.fps)))
+        # mode='fast' lifts the real-time throttle (control_hz no longer caps wall-clock).
+        fast = bool(getattr(cfg, "realtime", False) is False)
+        sim_mode = "fast" if fast else "realtime"
+        render_mode = getattr(cfg, "render_mode", "rgb_array") or "rgb_array"
+        action_step_size = float(getattr(cfg, "action_step_size", 0.005))
+        yaw_step_size = float(getattr(cfg, "yaw_step_size", 0.05))
+        include_yaw_slot = bool(getattr(cfg, "include_yaw_slot", False))
+        object_spawn_offset = tuple(getattr(cfg, "object_spawn_offset", (0.0, 0.0, 0.0)))
+        # Reuse the existing InverseKinematicsConfig.end_effector_bounds slot so users
+        # don't need a third place to define workspace limits. Optional.
+        ee_bounds_min = ee_bounds_max = None
+        ik_cfg = cfg.processor.inverse_kinematics
+        if ik_cfg is not None and ik_cfg.end_effector_bounds is not None:
+            b = ik_cfg.end_effector_bounds
+            if b.get("min") is not None:
+                ee_bounds_min = tuple(b["min"])
+            if b.get("max") is not None:
+                ee_bounds_max = tuple(b["max"])
+        record_gripper_width = (
+            cfg.processor.gripper.record_gripper_width
+            if cfg.processor.gripper is not None
+            else False
+        )
+        env_kwargs = {
+            "control_hz": float(cfg.fps),
+            "mode": sim_mode,
+            "max_episode_steps": max_ep,
+            "render_mode": render_mode,
+            "use_gripper": use_gripper,
+            "action_step_size": action_step_size,
+            "yaw_step_size": yaw_step_size,
+            "include_yaw_slot": include_yaw_slot,
+            "object_spawn_offset": object_spawn_offset,
+            "ee_bounds_min": ee_bounds_min,
+            "ee_bounds_max": ee_bounds_max,
+            "record_gripper_width": record_gripper_width,
+            "image_size": tuple(getattr(cfg, "image_size", (224, 224))),
+        }
+        env = gym.make(f"sim_assembling/{cfg.task}", **env_kwargs)
+        # gym.make consumes `max_episode_steps` for its TimeLimit wrapper and does
+        # NOT forward it to the entry_point. The inner AssemblingEnv keeps its
+        # default cap (300) and truncates first. Sync it so long teleop sessions
+        # actually run for max_ep steps.
+        try:
+            env.unwrapped.max_episode_steps = max_ep
+        except AttributeError:
+            pass
+
+        teleop_device = None
+        if cfg.teleop is not None:
+            teleop_device = make_teleoperator_from_config(cfg.teleop)
+            # Give gamepad teleop a live gripper-state reader so the R2 toggle
+            # emits the OPPOSITE of the current sim state (never desyncs from
+            # the policy or prior intervention). _gripper_cmd lives on
+            # AssemblingHILAdapter (a gym.Wrapper), NOT on .unwrapped (that
+            # returns the innermost AssemblingEnv). Walk the wrapper chain.
+            def _read_gripper_cmd(env_ref=env) -> float:
+                e = env_ref
+                while e is not None:
+                    cmd = getattr(e, "_gripper_cmd", None)
+                    if cmd is not None:
+                        return float(cmd)
+                    e = getattr(e, "env", None)
+                return 0.0
+
+            if hasattr(teleop_device, "set_gripper_state_fn"):
+                teleop_device.set_gripper_state_fn(_read_gripper_cmd)
+            teleop_device.connect()
+
+        _ = reset_time_s  # currently unused for sim (no physical reset delay needed)
+        return env, teleop_device
+
     # RC10 real robot environment (task-space jog controller)
     if cfg.name == "rc10":
         from lerobot.robots.rc10 import RC10Robot, RC10RobotEnv, RC10RobotEnvConfig
@@ -447,6 +544,27 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
     return env, teleop_device
 
 
+def _maybe_build_reward_step(cfg: HILSerlRobotEnvConfig, terminate_on_success: bool, device: str):
+    """Dispatch ``cfg.processor.reward_model`` to a reward processor step, or None.
+
+    ``type="manual"`` / ``"none"`` / ``None`` → returns None (reward comes from env
+    or from the teleop SUCCESS button via ``InterventionActionProcessorStep``).
+    """
+    rm_cfg = getattr(cfg.processor, "reward_model", None)
+    if rm_cfg is None or rm_cfg.type in (None, "manual", "none"):
+        return None
+
+    import dataclasses as _dc
+
+    from lerobot.processor.reward_model import build_reward_model_step
+
+    reward_cfg_dict = _dc.asdict(rm_cfg)
+    reward_cfg_dict["terminate_on_success"] = terminate_on_success
+    if reward_cfg_dict.get("device") in (None, "cpu") and device not in (None, "cpu"):
+        reward_cfg_dict["device"] = device
+    return build_reward_model_step(reward_cfg_dict)
+
+
 def make_processors(
     env: gym.Env, teleop_device: Teleoperator | None, cfg: HILSerlRobotEnvConfig, device: str = "cpu"
 ) -> tuple[
@@ -467,19 +585,72 @@ def make_processors(
         cfg.processor.reset.terminate_on_success if cfg.processor.reset is not None else True
     )
 
-    if cfg.name == "gym_hil":
-        action_pipeline_steps = [
-            InterventionActionProcessorStep(terminate_on_success=terminate_on_success),
-            Torch2NumpyActionProcessorStep(),
-        ]
+    if cfg.name in ("gym_hil", "sim_assembling"):
+        # Same obs/action shape contract as gym-hil; same processor pipeline applies.
+        use_gripper = cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else True
+        cont_gripper = (
+            cfg.processor.gripper.continuous_gripper
+            if cfg.processor.gripper is not None
+            else False
+        )
+        cont_gripper_deadband = (
+            cfg.processor.gripper.continuous_gripper_deadband
+            if cfg.processor.gripper is not None
+            else 0.33
+        )
+        action_pipeline_steps: list = []
+        if teleop_device is not None:
+            action_pipeline_steps.extend(
+                [
+                    AddTeleopActionAsComplimentaryDataStep(teleop_device=teleop_device),
+                    AddTeleopEventsAsInfoStep(teleop_device=teleop_device),
+                ]
+            )
+        action_pipeline_steps.append(
+            InterventionActionProcessorStep(
+                use_gripper=use_gripper,
+                terminate_on_success=terminate_on_success,
+            )
+        )
+        record_gripper_width = (
+            cfg.processor.gripper.record_gripper_width
+            if cfg.processor.gripper is not None
+            else False
+        )
+        # When record_gripper_width is on, the teleop already emits gripper as
+        # a continuous width target in [0, 1], the dataset stores it that way,
+        # and the env adapter passes it through unchanged. Skip both Int↔Cont
+        # discretization steps entirely.
+        if cont_gripper and not record_gripper_width:
+            from lerobot.processor.gripper_continuous import (
+                GripperContToIntStep,
+                GripperIntToContStep,
+            )
+
+            # Right after intervention: ensure stored action is uniformly continuous.
+            action_pipeline_steps.append(GripperIntToContStep())
+        stage_names = list(cfg.processor.stage_names or [])
+        if stage_names:
+            from lerobot.processor.stage_annotator import StageAnnotatorProcessorStep
+
+            action_pipeline_steps.append(StageAnnotatorProcessorStep(stage_names=stage_names))
+        if cont_gripper and not record_gripper_width:
+            # Last action-side step before env.step receives action: threshold to int.
+            action_pipeline_steps.append(GripperContToIntStep(deadband=cont_gripper_deadband))
+        action_pipeline_steps.append(Torch2NumpyActionProcessorStep())
 
         env_pipeline_steps = [
             GymHILAdapterProcessorStep(),
             Numpy2TorchActionProcessorStep(),
             VanillaObservationProcessorStep(),
-            AddBatchDimensionProcessorStep(),
-            DeviceProcessorStep(device=device),
         ]
+
+        reward_step = _maybe_build_reward_step(cfg, terminate_on_success, device)
+        if reward_step is not None:
+            env_pipeline_steps.append(reward_step)
+
+        env_pipeline_steps.append(AddBatchDimensionProcessorStep())
+        env_pipeline_steps.append(DeviceProcessorStep(device=device))
 
         return DataProcessorPipeline(
             steps=env_pipeline_steps, to_transition=identity_transition, to_output=identity_transition
@@ -498,8 +669,13 @@ def make_processors(
                 use_gripper=use_gripper,
                 terminate_on_success=terminate_on_success,
             ),
-            Torch2NumpyActionProcessorStep(),
         ]
+        stage_names = list(cfg.processor.stage_names or [])
+        if stage_names:
+            from lerobot.processor.stage_annotator import StageAnnotatorProcessorStep
+
+            action_pipeline_steps.append(StageAnnotatorProcessorStep(stage_names=stage_names))
+        action_pipeline_steps.append(Torch2NumpyActionProcessorStep())
 
         # Env pipeline: numpy to torch action + observation processing + optional image crop/resize + time limit + batch + device
         env_pipeline_steps = [
@@ -519,6 +695,10 @@ def make_processors(
             env_pipeline_steps.append(
                 TimeLimitProcessorStep(max_episode_steps=int(cfg.processor.reset.control_time_s * cfg.fps))
             )
+
+        reward_step = _maybe_build_reward_step(cfg, terminate_on_success, device)
+        if reward_step is not None:
+            env_pipeline_steps.append(reward_step)
 
         env_pipeline_steps.append(AddBatchDimensionProcessorStep())
         env_pipeline_steps.append(DeviceProcessorStep(device=device))
@@ -667,6 +847,10 @@ def make_processors(
             )
         )
 
+    reward_step = _maybe_build_reward_step(cfg, terminate_on_success, device)
+    if reward_step is not None:
+        env_pipeline_steps.append(reward_step)
+
     env_pipeline_steps.append(AddBatchDimensionProcessorStep())
     env_pipeline_steps.append(DeviceProcessorStep(device=device))
 
@@ -770,6 +954,112 @@ def step_env_and_process_transition(
     return new_transition
 
 
+def _write_stage_annotations_to_dataset(
+    dataset,
+    stage_names: list[str],
+    ep_annotations: list,
+    resume_offset: int = 0,
+    ep_extensions: list[int] | None = None,
+) -> None:
+    """Patch a finalized LeRobotDataset with SARM sparse/dual stage annotations.
+
+    Ported verbatim from lerobot-panda. ``ep_annotations`` is session-local
+    (0..N-1 for the N eps recorded THIS session). ``resume_offset`` is the
+    dataset's episode count BEFORE the session started (0 if not resumed).
+    Shard episode_index ``e`` maps to session-local index ``e - resume_offset``;
+    out-of-range ids keep any earlier annotation (preserves prior-session data).
+
+    Writes three per-episode columns into every ``meta/episodes/**.parquet``
+    shard:
+        sparse_subtask_names, sparse_subtask_start_frames, sparse_subtask_end_frames
+    and mirrors them into ``dense_subtask_*`` so the dataset is usable under
+    SARM ``annotation_mode=dual``. Also writes
+    ``meta/temporal_proportions_{sparse,dense}.json`` with per-stage frame
+    share across all annotated episodes.
+    """
+    import json
+    from pathlib import Path
+
+    import numpy as np
+    import pandas as pd
+
+    out_root = Path(dataset.root)
+    ep_meta_paths = list((out_root / "meta" / "episodes").rglob("*.parquet"))
+    if not ep_meta_paths:
+        logging.warning("stage annotation: no episodes parquet at %s", out_root)
+        return
+
+    frame_counts: dict[str, int] = {name: 0 for name in stage_names}
+    if ep_extensions is None:
+        ep_extensions = [0] * len(ep_annotations)
+    for (names, starts, ends), ext in zip(ep_annotations, ep_extensions, strict=True):
+        if names is None:
+            continue
+        last_row = len(names) - 1
+        for i, (n, s, e) in enumerate(zip(names, starts, ends, strict=True)):
+            if n not in frame_counts:
+                continue
+            count = max(0, e - s + 1)
+            # The last reported stage has its end extended over the partial
+            # (dropped) stage's frames. Strip those so temporal_proportions
+            # reflect real stage durations only.
+            if i == last_row:
+                count = max(0, count - int(ext))
+            frame_counts[n] += count
+
+    for path in ep_meta_paths:
+        df = pd.read_parquet(path)
+        df = df.sort_values("episode_index").reset_index(drop=True)
+        existing = {}
+        for col in (
+            "sparse_subtask_names",
+            "sparse_subtask_start_frames",
+            "sparse_subtask_end_frames",
+        ):
+            if col in df.columns:
+                existing[col] = df[col].tolist()
+            else:
+                existing[col] = [None] * len(df)
+
+        sparse_names, sparse_starts, sparse_ends = [], [], []
+        for row_idx, ep in enumerate(df["episode_index"].tolist()):
+            ep = int(ep)
+            list_idx = ep - resume_offset
+            if 0 <= list_idx < len(ep_annotations):
+                names, starts, ends = ep_annotations[list_idx]
+                if names is None:
+                    sparse_names.append(existing["sparse_subtask_names"][row_idx])
+                    sparse_starts.append(existing["sparse_subtask_start_frames"][row_idx])
+                    sparse_ends.append(existing["sparse_subtask_end_frames"][row_idx])
+                else:
+                    sparse_names.append(np.array(names, dtype=object))
+                    sparse_starts.append(np.array(starts, dtype=np.int32))
+                    sparse_ends.append(np.array(ends, dtype=np.int32))
+            else:
+                sparse_names.append(existing["sparse_subtask_names"][row_idx])
+                sparse_starts.append(existing["sparse_subtask_start_frames"][row_idx])
+                sparse_ends.append(existing["sparse_subtask_end_frames"][row_idx])
+
+        df["sparse_subtask_names"] = sparse_names
+        df["sparse_subtask_start_frames"] = sparse_starts
+        df["sparse_subtask_end_frames"] = sparse_ends
+        df["dense_subtask_names"] = sparse_names
+        df["dense_subtask_start_frames"] = sparse_starts
+        df["dense_subtask_end_frames"] = sparse_ends
+        df.to_parquet(path)
+
+    total = sum(frame_counts.values())
+    if total > 0:
+        props = {name: frame_counts[name] / total for name in stage_names}
+    else:
+        props = {name: 0.0 for name in stage_names}
+    for fname in ("temporal_proportions_sparse.json", "temporal_proportions_dense.json"):
+        p = out_root / "meta" / fname
+        with open(p, "w") as f:
+            json.dump(props, f, indent=2)
+        logging.info("stage annotation: wrote %s = %s", p, props)
+
+
 def control_loop(
     env: gym.Env,
     env_processor: DataProcessorPipeline[EnvTransition, EnvTransition],
@@ -802,6 +1092,23 @@ def control_loop(
     )
     env_processor.reset()
     action_processor.reset()
+    if teleop_device is not None and hasattr(teleop_device, "reset_episode_state"):
+        teleop_device.reset_episode_state()
+
+    # Locate the optional StageAnnotatorProcessorStep so we can flush per-ep
+    # annotations and patch the dataset's episodes.parquet after finalize.
+    stage_annotator = None
+    try:
+        from lerobot.processor.stage_annotator import StageAnnotatorProcessorStep
+
+        for step in getattr(action_processor, "steps", []):
+            if isinstance(step, StageAnnotatorProcessorStep) and step.stage_names:
+                stage_annotator = step
+                break
+    except Exception:
+        stage_annotator = None
+    all_ep_stage_annotations: list = []
+    all_ep_stage_extensions: list[int] = []
 
     # Process initial observation
     transition = create_transition(observation=obs, info=info, complementary_data=complementary_data)
@@ -842,39 +1149,152 @@ def control_loop(
                     "shape": value.squeeze(0).shape,
                     "names": None,
                 }
-            if "image" in key:
+            elif "image" in key:
                 features[key] = {
                     "dtype": "video",
                     "shape": value.squeeze(0).shape,
                     "names": ["channels", "height", "width"],
                 }
+            elif key.startswith("observation.") and isinstance(value, torch.Tensor):
+                # Generic float32 vector pass-through for env-specific extras
+                # (e.g. `observation.sim_state.qpos/qvel` from sim_assembling).
+                # Skip empty-shape features — LeRobotDataset.get_feature_stats
+                # crashes on np.reshape(size=0, shape=(0,)).
+                _shape = tuple(value.squeeze(0).shape)
+                if any(d == 0 for d in _shape):
+                    continue
+                features[key] = {"dtype": "float32", "shape": _shape, "names": None}
 
-        # Create dataset
-        dataset = LeRobotDataset.create(
-            cfg.dataset.repo_id,
-            cfg.env.fps,
-            root=cfg.dataset.root,
-            use_videos=True,
-            image_writer_threads=4,
-            image_writer_processes=0,
-            features=features,
-        )
+        if cfg.dataset.resume and cfg.dataset.overwrite:
+            raise ValueError(
+                "--dataset.resume=true and --dataset.overwrite=true are mutually exclusive."
+            )
+
+        # Optional clean-up before create (avoids FileExistsError on retry).
+        if cfg.dataset.overwrite:
+            import shutil as _shutil
+            from pathlib import Path as _Path
+
+            from lerobot.utils.constants import HF_LEROBOT_HOME
+
+            resolved_root = (
+                _Path(cfg.dataset.root)
+                if cfg.dataset.root is not None
+                else HF_LEROBOT_HOME / cfg.dataset.repo_id
+            )
+            if resolved_root.exists():
+                logging.warning("--dataset.overwrite=true: removing existing %s", resolved_root)
+                _shutil.rmtree(resolved_root)
+
+        if cfg.dataset.resume:
+            dataset = LeRobotDataset(
+                cfg.dataset.repo_id,
+                root=cfg.dataset.root,
+            )
+            dataset.start_image_writer(num_processes=0, num_threads=4)
+            logging.info(
+                "Resuming dataset %s: %d existing episodes, %d frames. "
+                "num_episodes_to_record=%d counts NEW episodes only.",
+                cfg.dataset.repo_id,
+                dataset.num_episodes,
+                dataset.num_frames,
+                cfg.dataset.num_episodes_to_record,
+            )
+        else:
+            # Create dataset
+            try:
+                dataset = LeRobotDataset.create(
+                    cfg.dataset.repo_id,
+                    cfg.env.fps,
+                    root=cfg.dataset.root,
+                    use_videos=True,
+                    image_writer_threads=4,
+                    image_writer_processes=0,
+                    features=features,
+                )
+            except FileExistsError as e:
+                raise FileExistsError(
+                    f"{e}\n\n"
+                    f"Dataset directory already exists. Options:\n"
+                    f"  1. Re-run with --dataset.resume=true (append new episodes).\n"
+                    f"  2. Re-run with --dataset.overwrite=true (destroys the existing dir first).\n"
+                    f"  3. Remove it manually: rm -rf ~/.cache/huggingface/lerobot/{cfg.dataset.repo_id}\n"
+                    f"  4. Pick a different --dataset.repo_id."
+                ) from None
+
+        # Snapshot the dataset's episode count so stage annotations for this
+        # session map to the right shard rows. 0 for a fresh dataset.
+        stage_annotation_resume_offset = int(dataset.num_episodes)
+        if stage_annotator is not None and stage_annotation_resume_offset > 0:
+            logging.info(
+                "[STAGE] resume offset=%d. temporal_proportions json will reflect "
+                "SESSION-LOCAL stage frames only (prior-session eps not re-scanned).",
+                stage_annotation_resume_offset,
+            )
 
     episode_idx = 0
     episode_step = 0
     episode_start_time = time.perf_counter()
 
-    while episode_idx < cfg.dataset.num_episodes_to_record:
+    # Install a SIGINT handler that sets a stop flag instead of raising
+    # KeyboardInterrupt. The loop polls the flag so we exit cleanly at the
+    # next iteration boundary and the finalize/patch-annotations code below
+    # still runs. Without this, Ctrl-C between episodes bypasses
+    # dataset.finalize() and leaves the chunk parquet unflushed (corrupted).
+    import signal as _signal
+
+    _stop_requested = [False]
+
+    def _on_sigint(_signum, _frame):
+        if not _stop_requested[0]:
+            _stop_requested[0] = True
+            logging.info(
+                "Ctrl-C received — finishing current step, discarding any "
+                "in-progress episode buffer, and finalizing dataset. "
+                "Press Ctrl-C again to force-quit."
+            )
+        else:
+            # Second Ctrl-C: restore default and re-raise to force-exit.
+            _signal.signal(_signal.SIGINT, _prev_sigint_handler)
+            raise KeyboardInterrupt
+
+    _prev_sigint_handler = _signal.signal(_signal.SIGINT, _on_sigint)
+
+    while episode_idx < cfg.dataset.num_episodes_to_record and not _stop_requested[0]:
         # print(f"Starting episode {episode_idx+1}/{cfg.dataset.num_episodes_to_record}...", end="\r", flush=True)
         step_start_time = time.perf_counter()
 
-        # Create a neutral action (no movement). Size from the env's action_space so the
-        # zero-fill covers any combination of (xyz, yaw, gripper). Gripper, when present,
-        # is always at index -1, so we overwrite the last element with STAY=1.0.
-        ad = int(env.action_space.shape[0])
-        neutral_action = torch.zeros(ad, dtype=torch.float32)
+        # Create a neutral action (no movement)
+        # Size neutral action from the env's action space so yaw / extra dims
+        # (e.g. sim_assembling with include_yaw_slot=True) don't fall through.
+        # Gripper, when present, is always at index -1 (RC10/UR10 convention;
+        # 1.0 = STAY, 0.0 = close, 2.0 = open).
+        act_dim = int(getattr(env.action_space, "shape", (4,))[0])
+        neutral_action = torch.zeros(act_dim, dtype=torch.float32)
         if use_gripper:
-            neutral_action[-1] = 1.0  # STAY (RC10/UR10 convention; 0.0 = close, 2.0 = open)
+            # Gripper neutral depends on the recording mode:
+            #  - legacy discrete: 1.0 = "stay" int.
+            #  - record_gripper_width: read teleop's persistent width target so
+            #    that releasing intervention mid-episode does NOT flip the
+            #    gripper to a default value (would otherwise force open at 1.0).
+            _record_gripper_width = (
+                cfg.env.processor.gripper.record_gripper_width
+                if (cfg.env.processor is not None and cfg.env.processor.gripper is not None)
+                else False
+            )
+            if _record_gripper_width and teleop_device is not None and hasattr(
+                teleop_device, "_gripper_width_target"
+            ):
+                neutral_action[-1] = float(teleop_device._gripper_width_target)
+            else:
+                neutral_action[-1] = 1.0
+
+        # LEROBOT_RECORD_RANDOM_ACTION=1 replaces neutral action with a random
+        # sample from env.action_space — used to collect OOD negative frames for
+        # training the CNN reward classifier against random-policy exploration.
+        if os.environ.get("LEROBOT_RECORD_RANDOM_ACTION") == "1":
+            sampled = env.action_space.sample()
+            neutral_action = torch.as_tensor(sampled, dtype=torch.float32)
 
         # Use the new step function
         transition = step_env_and_process_transition(
@@ -886,6 +1306,26 @@ def control_loop(
         )
         terminated = transition.get(TransitionKey.DONE, False)
         truncated = transition.get(TransitionKey.TRUNCATED, False)
+
+        # Stream to Rerun if enabled.
+        if getattr(cfg, "rerun", False):
+            from lerobot.utils.visualization_utils import log_rerun_data
+
+            obs_for_rerun = {}
+            for k, v in transition.get(TransitionKey.OBSERVATION, {}).items():
+                if isinstance(v, torch.Tensor):
+                    arr = v.detach().cpu().float().numpy()
+                    if arr.ndim >= 3 and arr.shape[0] == 1:
+                        arr = arr[0]
+                    obs_for_rerun[k] = arr
+            act_for_rerun = None
+            act = transition.get(TransitionKey.ACTION)
+            if isinstance(act, torch.Tensor):
+                arr = act.detach().cpu().float().numpy()
+                if arr.ndim >= 2 and arr.shape[0] == 1:
+                    arr = arr[0]
+                act_for_rerun = {"raw": arr}
+            log_rerun_data(observation=obs_for_rerun, action=act_for_rerun)
 
         # Display camera feeds if available (shows what the policy sees)
         display_cameras = (
@@ -972,11 +1412,47 @@ def control_loop(
                 else:
                     logging.info(f"Saving episode {episode_idx}")
                     dataset.save_episode()
+                    if stage_annotator is not None:
+                        # Success for stage labeling: operator pressed the
+                        # SUCCESS button, or env terminated with positive
+                        # reward. If neither, the last-entered stage is
+                        # treated as partial (τ=0 equivalent).
+                        info_at_end = transition[TransitionKey.INFO] or {}
+                        reward_at_end = float(
+                            transition.get(TransitionKey.REWARD, 0.0) or 0.0
+                        )
+                        episode_succeeded = bool(
+                            info_at_end.get(TeleopEvents.SUCCESS, False)
+                        ) or (bool(terminated) and reward_at_end > 0.0)
+                        annot = stage_annotator.flush_episode_annotation(
+                            episode_succeeded=episode_succeeded
+                        )
+                        all_ep_stage_annotations.append(annot)
+                        all_ep_stage_extensions.append(
+                            stage_annotator.extension_frame_count()
+                        )
+                        names, _, _ = annot
+                        n_configured = len(stage_annotator.stage_names)
+                        n_recorded = 0 if names is None else len(names)
+                        if n_recorded < n_configured:
+                            logging.warning(
+                                "[STAGE] ep %d: only %d/%d stages annotated (%s)"
+                                "%s.",
+                                episode_idx - 1,
+                                n_recorded,
+                                n_configured,
+                                names if names else "none",
+                                " — last-entered stage dropped (partial)"
+                                if not episode_succeeded
+                                else "",
+                            )
 
             # Reset for new episode
             obs, info = env.reset()
             env_processor.reset()
             action_processor.reset()
+            if teleop_device is not None and hasattr(teleop_device, "reset_episode_state"):
+                teleop_device.reset_episode_state()
 
             transition = create_transition(observation=obs, info=info)
             transition = env_processor(transition)
@@ -984,10 +1460,36 @@ def control_loop(
         # Maintain fps timing
         precise_sleep(max(dt - (time.perf_counter() - step_start_time), 0.0))
 
+    # Drop any partially-recorded episode buffer left over from a
+    # mid-episode Ctrl-C so it doesn't corrupt finalize().
+    if _stop_requested[0] and dataset is not None and episode_step > 0:
+        logging.info(
+            "Discarding in-progress episode buffer (%d frames) after Ctrl-C.",
+            episode_step,
+        )
+        try:
+            dataset.clear_episode_buffer()
+        except Exception as e:
+            logging.warning("clear_episode_buffer failed: %r", e)
+
+    # Restore the previous SIGINT handler so any later Ctrl-C (e.g. during
+    # push_to_hub) uses default behavior.
+    _signal.signal(_signal.SIGINT, _prev_sigint_handler)
+
     # Bug fix: we need to handle the saving and pushing to hub separately
     if dataset is not None:
         logging.info("Finalizing dataset before pushing to hub")
         dataset.finalize()
+        # Patch episodes.parquet + write temporal proportions json for SARM
+        # dual-mode training when stage annotation was used this session.
+        if stage_annotator is not None and all_ep_stage_annotations:
+            _write_stage_annotations_to_dataset(
+                dataset=dataset,
+                stage_names=stage_annotator.stage_names,
+                ep_annotations=all_ep_stage_annotations,
+                resume_offset=stage_annotation_resume_offset,
+                ep_extensions=all_ep_stage_extensions,
+            )
     if cfg.dataset.push_to_hub:
         logging.info("Pushing dataset to hub")
         dataset.push_to_hub()
@@ -1030,6 +1532,11 @@ def main(cfg: GymManipulatorConfig) -> None:
     """Main entry point for gym manipulator script."""
     env, teleop_device = make_robot_env(cfg.env)
     env_processor, action_processor = make_processors(env, teleop_device, cfg.env, cfg.device)
+
+    if cfg.rerun:
+        from lerobot.utils.visualization_utils import init_rerun
+
+        init_rerun(session_name="lerobot_gym_manipulator")
 
     print("Environment observation space:", env.observation_space)
     print("Environment action space:", env.action_space)

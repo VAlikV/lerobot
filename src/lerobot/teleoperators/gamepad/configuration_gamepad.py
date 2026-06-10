@@ -24,10 +24,23 @@ from ..config import TeleoperatorConfig
 class GamepadTeleopConfig(TeleoperatorConfig):
     use_gripper: bool = True
 
-    # When True, add a 4th continuous DOF (yaw, rotation about the tool Z axis) to the
-    # action vector. Right Stick X drives delta_yaw. Defaults False so existing robots
+    # If True, read the right-stick horizontal axis (axis 3) and emit a
+    # ``delta_yaw`` field in addition to delta_x / delta_y / delta_z. Enables
+    # yaw control for envs that accept a 5D action (dx, dy, dz, dyaw, gripper).
+    # Right Stick X drives delta_yaw. Defaults False so existing robots
     # (RC10, etc.) and existing recorded datasets are unaffected.
     use_yaw: bool = False
+
+    # SDL/pygame button index that advances to the next SARM recording stage
+    # (consumed by StageAnnotatorProcessorStep). Default 0: Cross on DualSense
+    # via SDL2, which the existing gamepad update() loop leaves unhandled.
+    # Remap per-controller via env JSON if 0 collides on your pad.
+    stage_advance_button: int = 0
+
+    # When True, emit gripper as a continuous width target in [0, 1]
+    # (close → 0.0, open → 1.0, stay → hold last). Pairs with the env-side
+    # `record_gripper_width` flag to record continuous gripper datasets.
+    record_gripper_width: bool = False
 
     # Per-axis sign flips applied in GamepadTeleop.get_action(). Use these when the robot's
     # base-frame x/y/z axes don't match the operator's intuitive forward/back/left/right/up/down
@@ -37,11 +50,3 @@ class GamepadTeleopConfig(TeleoperatorConfig):
     invert_delta_y: bool = False
     invert_delta_z: bool = False
     invert_delta_yaw: bool = False
-
-    # Symmetric deadzone applied to each stick axis BEFORE sign-flip. Any |delta| <= deadzone
-    # is forced to 0.0; values above are linearly rescaled so 1.0 still maps to full deflection
-    # (no jump at the deadzone edge). Catches resting-stick drift AND the spring-back overshoot
-    # that occurs when an analog stick momentarily reads past-center on release — without this,
-    # robots that latch deltas into a target (UR10e) accumulate the spring-back as a real
-    # backward move. Default is small enough to be invisible on healthy sticks.
-    # deadzone: float = 0.1

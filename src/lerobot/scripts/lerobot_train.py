@@ -255,8 +255,8 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         # Only provide dataset_stats when not resuming from saved processor state
         processor_kwargs["dataset_stats"] = dataset.meta.stats
 
-    # For SARM, always provide dataset_meta for progress normalization
-    if cfg.policy.type == "sarm":
+    # For SARM (incl. ext plugin), always provide dataset_meta for progress normalization
+    if cfg.policy.type == "sarm" or cfg.policy.type.startswith("sarm_"):
         processor_kwargs["dataset_meta"] = dataset.meta
 
     if cfg.policy.pretrained_path is not None:
@@ -285,6 +285,21 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         **processor_kwargs,
         **postprocessor_kwargs,
     )
+
+    # SARM end-to-end CLIP fine-tune: wire policy.clip_model into the SARM
+    # encoding processor step so backprop flows from total_loss through CLIP.
+    # Triggered by SARMConfig.freeze_clip=False (policy owns the CLIP submodule).
+    if getattr(cfg.policy, "freeze_clip", True) is False and getattr(policy, "clip_model", None) is not None:
+        try:
+            for step in getattr(preprocessor, "steps", []):
+                if hasattr(step, "set_external_clip"):
+                    step.set_external_clip(policy.clip_model)
+                    if is_main_process:
+                        logging.info(f"Wired SARMRewardModel.clip_model into preprocessor step {type(step).__name__}")
+                    break
+        except Exception as e:
+            if is_main_process:
+                logging.warning(f"Could not wire shared CLIP into processor: {e}")
 
     if is_main_process:
         logging.info("Creating optimizer and scheduler")
@@ -339,7 +354,44 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         logging.info(f"{num_total_params=} ({format_big_number(num_total_params)})")
 
     # create dataloader for offline training
-    if hasattr(cfg.policy, "drop_n_last_frames"):
+    use_stage_balanced = bool(getattr(cfg.policy, "stage_balanced_sampling", False))
+    if use_stage_balanced:
+        # Build WeightedRandomSampler so each sparse stage is equally represented.
+        import numpy as _np
+        from collections import Counter as _Counter
+        sparse_names = list(getattr(cfg.policy, "sparse_subtask_names", []) or [])
+        n_total = len(dataset)
+        per_frame_stage = _np.zeros(n_total, dtype=_np.int64)
+        for ep_idx in range(len(dataset.meta.episodes)):
+            ep_meta = dataset.meta.episodes[ep_idx]
+            ep_start = int(ep_meta["dataset_from_index"])
+            ep_end = int(ep_meta["dataset_to_index"])
+            sn = ep_meta.get("sparse_subtask_names")
+            ss = ep_meta.get("sparse_subtask_start_frames")
+            se = ep_meta.get("sparse_subtask_end_frames")
+            if sn is None or ss is None or se is None:
+                continue
+            for s, e, name in zip(ss, se, sn):
+                if name not in sparse_names:
+                    continue
+                sid = sparse_names.index(name)
+                gs = ep_start + int(s)
+                ge = ep_start + min(int(e) + 1, ep_end - ep_start)
+                per_frame_stage[gs:ge] = sid
+        cnt = _Counter(per_frame_stage.tolist())
+        if is_main_process:
+            logging.info(f"stage_balanced_sampling enabled, frame counts: {dict(cnt)}")
+        weights = _np.zeros(n_total, dtype=_np.float64)
+        for s, c in cnt.items():
+            weights[per_frame_stage == s] = 1.0 / max(1, c)
+        weights = weights / max(weights.sum(), 1e-12)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights=torch.from_numpy(weights).float(),
+            num_samples=n_total,
+            replacement=True,
+        )
+        shuffle = False
+    elif hasattr(cfg.policy, "drop_n_last_frames"):
         shuffle = False
         sampler = EpisodeAwareSampler(
             dataset.meta.episodes["dataset_from_index"],
@@ -433,6 +485,14 @@ def train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
         if is_log_step:
             logging.info(train_tracker)
+            if output_dict:
+                # Log SARM diagnostics (entropy, argmax dist) if present
+                diag_keys = ["sparse_stage_entropy", "sparse_argmax_frac0",
+                             "sparse_argmax_frac_max", "sparse_gt_frac0",
+                             "dense_stage_entropy", "dense_argmax_frac_max"]
+                diag_parts = [f"{k}={output_dict[k]:.3f}" for k in diag_keys if k in output_dict]
+                if diag_parts:
+                    logging.info("[SARM_DIAG] " + " ".join(diag_parts))
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:

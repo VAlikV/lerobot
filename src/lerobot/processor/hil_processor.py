@@ -497,6 +497,7 @@ class InterventionActionProcessorStep(ProcessorStep):
                     teleop_action.get("delta_y", 0.0),
                     teleop_action.get("delta_z", 0.0),
                 ]
+                # Optional yaw slot (gamepad/ps4_joystick teleops with use_yaw=True).
                 if self.use_yaw:
                     action_list.append(teleop_action.get("delta_yaw", 0.0))
                 if self.use_gripper:
