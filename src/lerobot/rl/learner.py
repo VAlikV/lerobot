@@ -866,6 +866,13 @@ def handle_resume_logic(cfg: TrainRLServerPipelineConfig) -> TrainRLServerPipeli
     checkpoint_cfg_path = os.path.join(checkpoint_dir, PRETRAINED_MODEL_DIR, "train_config.json")
     checkpoint_cfg = TrainRLServerPipelineConfig.from_pretrained(checkpoint_cfg_path)
 
+    # Set pretrained_path so make_policy loads weights from checkpoint.
+    # train_config.json stores pretrained_path as null (it is set dynamically),
+    # so we must restore it here after loading the config from disk.
+    pretrained_model_dir = os.path.join(checkpoint_dir, PRETRAINED_MODEL_DIR)
+    if checkpoint_cfg.policy is not None:
+        checkpoint_cfg.policy.pretrained_path = pretrained_model_dir
+
     # Ensure resume flag is set in returned config
     checkpoint_cfg.resume = True
     return checkpoint_cfg
@@ -1162,7 +1169,7 @@ def process_transitions(
 
             # Add to offline buffer if it's an intervention
             if dataset_repo_id is not None and transition.get("complementary_info", {}).get(
-                TeleopEvents.IS_INTERVENTION
+                TeleopEvents.IS_INTERVENTION.value
             ):
                 offline_replay_buffer.add(**transition)
 
