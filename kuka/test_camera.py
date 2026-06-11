@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-cam_ids = [0, 2, 6]
+cam_ids = [3, 5, 7]
 caps = [cv2.VideoCapture(i) for i in cam_ids]
 
 # Verification: Check if all cameras opened

@@ -1,5 +1,5 @@
 import serial
-
+from pynput import keyboard
 
 class Gripper:
     def __init__(self, device="/dev/ttyACM0", baudrate=115200, timeout=1):
@@ -23,5 +23,31 @@ class Gripper:
         if self._serial.is_open:
             self._serial.close()
 
-# def main():
-#     gripper = Gripper(device="/dev/ttyACM1")
+def main():
+    gripper = Gripper(device="/dev/ttyACM0")
+
+    print("Keyboard control: o - open, c - close, q/esc - quit")
+
+    def on_press(key):
+        try:
+            if key.char == "o":
+                gripper.send(1)
+                print("Open")
+            elif key.char == "c":
+                gripper.send(0)
+                print("Close")
+            elif key.char == "q":
+                return False
+        except AttributeError:
+            if key == keyboard.Key.esc:
+                return False
+
+    try:
+        with keyboard.Listener(on_press=on_press) as listener:
+            listener.join()
+    finally:
+        gripper.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,92 @@
+{
+    "env": {
+        "name": "kuka_iiwa",
+        "task": "kuka_cube",
+        "fps": 30,
+
+        "robot": {
+            "type": "kuka_iiwa",
+            "urdf_path": "src/lerobot/robots/kuka_iiwa/iiwa.urdf",
+            "use_task_space": true,
+            "gripper_port": "/dev/ttyACM0",
+            "gripper_baudrate": 115200,
+            "resolution": [224, 224],
+            "reset_pose": [0.638, 0.0, 0.245, 3.1415, 0.0, 3.1415, 1.0],
+            "reset_time_s": 15.0,
+            "reset_fps": 30,
+            "control_hz": 100,
+            "cameras": {
+                "front": {
+                    "type": "opencv",
+                    "index_or_path": 3,
+                    "width": 640,
+                    "height": 480,
+                    "fps": 30
+                },
+                "side": {
+                    "type": "opencv",
+                    "index_or_path": 5,
+                    "width": 640,
+                    "height": 480,
+                    "fps": 30
+                }
+            }
+        },
+
+        "teleop": {
+            "type": "gamepad",
+            "use_gripper": true,
+            "use_yaw": true,
+            "invert_delta_x": true,
+            "invert_delta_y": true,
+            "invert_delta_z": false,
+            "invert_delta_yaw": true
+        },
+
+        "processor": {
+            "control_mode": "gamepad",
+            "gripper": {
+                "use_gripper": true,
+                "gripper_penalty": -0.02
+            },
+            "reset": {
+                "fixed_reset_joint_positions": [0.638, 0.0, 0.245, 3.1415, 0.0, 3.1415, 1.0],
+                "reset_time_s": 15.0,
+                "control_time_s": 60.0,
+                "terminate_on_success": true,
+                "randomization_xy": 0.02,
+                "randomization_z": 0.01
+            },
+            "observation": {
+                "display_cameras": true
+            },
+            "image_preprocessing": {
+                "crop_params_dict": null,
+                "resize_size": [224, 224]
+            },
+            "inverse_kinematics": {
+                "use_yaw": true,
+                "end_effector_step_sizes": {
+                    "x": 0.002,
+                    "y": 0.002,
+                    "z": 0.002,
+                    "yaw": 0.005
+                },
+                "end_effector_bounds": {
+                    "min": [0.35, -0.25, 0.2, -0.35],
+                    "max": [0.8, 0.25, 0.55, 0.35]
+                }
+            }
+        }
+    },
+
+    "dataset": {
+        "repo_id": "local/kuka_iiwa_2cams_abs_packing_park2",
+        "task": "kuka_cube",
+        "num_episodes_to_record": 30,
+        "action_recording_mode": "absolute",
+        "push_to_hub": false
+    },
+    "mode": "record",
+    "device": "cpu"
+}

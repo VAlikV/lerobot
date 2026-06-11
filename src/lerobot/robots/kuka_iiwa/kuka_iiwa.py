@@ -119,7 +119,7 @@ class KukaIiwa(Robot):
         )
 
         for cam in self.cameras.values():
-            time.sleep(0.1)
+            time.sleep(0.5)
             cam.connect()
 
         self._home_action = self._make_home_action()
