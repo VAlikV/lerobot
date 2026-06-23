@@ -19,12 +19,17 @@ trimmed of gym / cameras / HIL baselines):
     URScript watchdog never fires across idle gaps.
   - `set_target()` is a sub-microsecond locked write of the shared target; the stream
     thread picks it up on its next tick. NO per-call servo entry point.
-  - Reset uses a blocking `moveL` (speed/accel limited) — pauses the stream, moves,
-    updates the target, resumes. A far servoL jump would move at servo speed (unsafe
-    for a reset); moveL is bounded.
-  - servoStop is known to WEDGE against this controller after a few cycles, so every
-    blocking ctrl call that can wedge runs under a hard deadline that force-resets the
-    RTDE handle on hang (see `_ctrl_call_with_deadline`).
+  - Reset (`move_to_pose`) drives home by RAMPING the streamed servoL target from the
+    current pose at ~`reset_speed` — NOT moveL, NOT servoStop. servoStop wedges on this
+    firmware and moveL needs servoStop to leave servo mode, so the moveL reset path hits
+    a wedge whenever the arm has to travel; the wedge recovery can then fail outright if a
+    fieldbus (EtherNet/IP / PROFINET / MODBUS) occupies a register bank. Ramping the live
+    servoL target avoids the wedge site entirely (the arm glides under the controller).
+  - servoStop is therefore only used at `stop()`/disconnect. It is known to WEDGE against
+    this controller, so it (and the disconnect-time stopScript) runs under a hard deadline
+    that force-resets the RTDE handle on hang, reconnecting on the opposite register bank
+    (`FLAG_UPPER_RANGE_REGISTERS`) since a wedged session never releases its bank — see
+    `_ctrl_call_with_deadline`.
 
 NOTE: servoL and OSC's directTorque are mutually exclusive control modes — only one
 backend may be connected to the robot at a time. Switching happens BETWEEN behaviour-
@@ -252,59 +257,65 @@ class UR10ServoLBackend:
         return pose
 
     def move_to_pose(self, pose, close_gripper=False):
-        """Blocking, speed/accel-limited reset move via moveL.
+        """Blocking reset move to an absolute pose by RAMPING the streamed servoL target.
 
-        Pauses the stream, exits servoL mode, moveL to the pose, updates the shared
-        target so the resumed thread holds there (no snap back to the old target), then
-        resumes. Mirrors `UR10Robot.move_to_pose`.
+        Crucially this does NOT use moveL or servoStop. On this firmware servoStop wedges
+        (it polls a value the control script may never return), and moveL needs servoStop
+        to leave servo mode — so the moveL reset path hits a wedge whenever the arm has to
+        travel (e.g. end-of-episode -> home). When the wedge recovery then tries to
+        reconnect, it can fail outright if a fieldbus (EtherNet/IP / PROFINET / MODBUS) is
+        occupying a register bank, leaving NO free bank. The streaming reset sidesteps the
+        whole wedge site: the stream thread keeps servoL-ing; we just feed it a finely
+        interpolated target from the current pose to `pose` at ~`reset_speed`, so the arm
+        glides home under the live controller. This is the same approach HIL-SERL's
+        auto_reset_to_home uses before its (skipped, no-op) moveL.
         """
-        pose = list(np.asarray(pose, dtype=float).reshape(6))
-        streaming = self._stream_thread is not None and self._stream_thread.is_alive()
+        pose = np.asarray(pose, dtype=float).reshape(6)
+        streaming = (self._stream_thread is not None and self._stream_thread.is_alive()
+                     and not self._stream_failed.is_set())
 
-        # If already within tolerance of the target and streaming is live, skip the
-        # pause/servoStop/moveL cycle and let servoL absorb the residual. servoStop is
-        # this controller's known wedge site — every crossing we avoid is a wedge we can't
-        # hit (makes back-to-back resets at home wedge-free).
-        if streaming and not self._stream_failed.is_set():
-            cur = self.get_current_tcp()
-            pos_err = float(np.linalg.norm(np.asarray(pose[:3]) - np.asarray(cur[:3])))
-            rot_err = float(np.linalg.norm(
-                (Rotation.from_rotvec(pose[3:6]).inv() * Rotation.from_rotvec(cur[3:6])).as_rotvec()
-            ))
-            if pos_err < 2e-3 and rot_err < 0.02:
-                with self._target_lock:
-                    self._target = list(pose)
-                logger.info("[servol] move_to_pose: already at target (%.2f mm, %.4f rad off) "
-                            "— letting servoL converge, skipping servoStop/moveL",
-                            pos_err * 1e3, rot_err)
-                self._apply_gripper(close_gripper)
-                return np.asarray(pose, dtype=float)
-
-        if streaming:
-            self._pause_event.set()
-            # moveL does not implicitly leave servoL mode on this firmware, so the mode
-            # must be exited first. But servoStop wedges forever when the control script
-            # has died (it polls for an ack the dead script can never send) — so if the
-            # script isn't running, reupload it (a fresh script starts outside servo mode,
-            # no servoStop needed) instead. Deadline-guarded either way.
-            def _stop_servo_or_reupload():
-                if self.rtde_c.isProgramRunning():
-                    self.rtde_c.servoStop(10.0)
-                elif not self.rtde_c.reuploadScript():
-                    raise RuntimeError(
-                        "RTDE control script not running and reuploadScript failed "
-                        "(robot may be protective-stopped or in local mode)")
-            self._ctrl_call_with_deadline("servoStop", _stop_servo_or_reupload, 5.0)
-        try:
+        if not streaming:
+            # Stream isn't running (not started, or already failed). Fall back to a plain
+            # blocking moveL — no servoStop needed because we're not in servo mode.
             with self._ctrl_lock:
-                self.rtde_c.moveL(pose, self.reset_speed, self.reset_acceleration, False)
+                self.rtde_c.moveL(list(pose), self.reset_speed, self.reset_acceleration, False)
             with self._target_lock:
                 self._target = list(pose)
-        finally:
-            if streaming:
-                self._pause_event.clear()
+            self._apply_gripper(close_gripper)
+            return pose
+
+        cur = np.asarray(self.get_current_tcp(), dtype=float)
+        R0 = Rotation.from_rotvec(cur[3:6])
+        d_rot = (R0.inv() * Rotation.from_rotvec(pose[3:6])).as_rotvec()  # tool-frame delta
+        pos_err = float(np.linalg.norm(pose[:3] - cur[:3]))
+        rot_err = float(np.linalg.norm(d_rot))
+
+        # Already there -> just latch the exact target and let servoL hold it.
+        if pos_err < 2e-3 and rot_err < 0.02:
+            with self._target_lock:
+                self._target = list(pose)
+            self._apply_gripper(close_gripper)
+            return pose
+
+        # Duration so translation stays ~reset_speed and rotation ~0.6 rad/s, with a floor.
+        duration = max(pos_err / max(self.reset_speed, 1e-3), rot_err / 0.6, 0.3)
+        steps = max(1, int(round(duration / self.stream_dt)))
+        logger.info("[servol] move_to_pose: streaming reset %.1f mm / %.3f rad over %.2fs "
+                    "(%d steps) — no servoStop/moveL", pos_err * 1e3, rot_err, duration, steps)
+        for i in range(1, steps + 1):
+            if self._stream_failed.is_set() or self._stop_event.is_set():
+                break
+            t = i / steps
+            p = cur[:3] + t * (pose[:3] - cur[:3])
+            r = (R0 * Rotation.from_rotvec(t * d_rot)).as_rotvec()
+            with self._target_lock:
+                self._target = [float(p[0]), float(p[1]), float(p[2]),
+                                float(r[0]), float(r[1]), float(r[2])]
+            time.sleep(self.stream_dt)
+        with self._target_lock:
+            self._target = list(pose)
         self._apply_gripper(close_gripper)
-        return np.asarray(pose, dtype=float)
+        return pose
 
     # ---- internals ---------------------------------------------------------
     def _apply_gripper(self, close_gripper: bool) -> None:
