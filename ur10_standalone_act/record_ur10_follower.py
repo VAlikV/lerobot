@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 # -- user-tunable ---------------------------------------------------------------
 ROBOT_IP = "192.168.0.100"
+# Control backend: "servol" (UR's stiff position controller) for free-space pick/place/
+# transport stages; "osc" (compliant task-space torque) for the contact-rich press stage.
+# Datasets/ACT training are identical across backends — record each stage with the backend
+# you will run it with at eval time.
+CONTROL_BACKEND = "servol"
 REPO_ID = "local/ur10_follower_act_relative"
 TASK_DESCRIPTION = "ur10 follower act relative"
 NUM_EPISODES = 50
@@ -107,6 +112,7 @@ def _banner(msg: str) -> None:
 def main() -> None:
     robot = UR10Follower(UR10FollowerConfig(
         id="ur10_follower", ip=ROBOT_IP, frequency=500,
+        control_backend=CONTROL_BACKEND,
         kp_pos=5000.0, kp_rot=100.0, use_yaw=True, use_gripper=True,
         set_payload=False, payload_mass=1.3,
         cameras=CAMERAS, resolution=(224, 224), crop_boxes=CROP_BOXES,

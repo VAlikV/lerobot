@@ -40,6 +40,7 @@ from lerobot.robots.robot import Robot
 from lerobot.utils.decorators import check_if_not_connected
 
 from ur10_osc_controller import UR10OSCController
+from ur10_servol_backend import UR10ServoLBackend
 
 
 @RobotConfig.register_subclass("ur10_follower")
@@ -50,13 +51,29 @@ class UR10FollowerConfig(RobotConfig):
     ip: str = "192.168.0.100"
     frequency: int = 500
 
-    # OSC gains (finalized on hardware: pure PD, no integral/DOB).
+    # Control backend: "osc" = compliant task-space torque (UR10OSCController), used for
+    # the contact-rich press stage; "servol" = UR's stiff position controller
+    # (UR10ServoLBackend), used for free-space pick/place/transport. Both expose the same
+    # send_action/get_observation interface, so datasets + ACT training are identical
+    # across backends — pick per stage. The two control modes are mutually exclusive on
+    # the robot; only the selected backend is instantiated.
+    control_backend: str = "osc"
+
+    # OSC gains (finalized on hardware: pure PD, no integral/DOB). Used when control_backend="osc".
     kp_pos: float = 5000.0
     kp_rot: float = 100.0
     damping_ratio_pos: float = 1.0
     damping_ratio_rot: float = 1.0
     error_delta_pos: float = 0.05
     error_delta_rot: float = 0.3
+
+    # servoL streaming params. Used when control_backend="servol". Conservative defaults
+    # (gain at floor, lookahead > stream dt) — lower gain first when tuning, don't raise it.
+    stream_frequency_hz: int = 200
+    servo_lookahead_time: float = 0.15
+    servo_gain: float = 100.0
+    reset_speed: float = 0.1          # m/s for the blocking moveL reset
+    reset_acceleration: float = 0.1   # m/s^2 for the blocking moveL reset
 
     # Tool / payload. Default: trust the pendant payload (Payload->Measure).
     tcp_offset: list[float] | None = None
@@ -111,7 +128,7 @@ class UR10Follower(Robot):
         super().__init__(config)
         self.config = config
         self.cameras = make_cameras_from_configs(config.cameras)
-        self._controller: UR10OSCController | None = None
+        self._controller: UR10OSCController | UR10ServoLBackend | None = None
 
         # Per-episode home (captured by capture_home()).
         self.home_xyz = np.zeros(3)
@@ -166,21 +183,43 @@ class UR10Follower(Robot):
         if self.is_connected:
             raise RuntimeError("UR10Follower is already connected.")
 
-        self._controller = UR10OSCController(
-            self.config.ip, frequency=self.config.frequency,
-            kp_pos=self.config.kp_pos, kp_rot=self.config.kp_rot,
-            damping_ratio_pos=self.config.damping_ratio_pos,
-            damping_ratio_rot=self.config.damping_ratio_rot,
-            error_delta_pos=self.config.error_delta_pos,
-            error_delta_rot=self.config.error_delta_rot,
-            tcp_offset=self.config.tcp_offset,
-            set_payload=self.config.set_payload,
-            payload_mass=self.config.payload_mass, payload_cog=self.config.payload_cog,
-            use_gripper=self.config.use_gripper, gripper_port=self.config.gripper_port,
-            gripper_baudrate=self.config.gripper_baudrate,
-            joints_init=self.config.joints_init,
-            soft_real_time=self.config.soft_real_time,
-        )
+        backend = self.config.control_backend.lower()
+        if backend == "osc":
+            self._controller = UR10OSCController(
+                self.config.ip, frequency=self.config.frequency,
+                kp_pos=self.config.kp_pos, kp_rot=self.config.kp_rot,
+                damping_ratio_pos=self.config.damping_ratio_pos,
+                damping_ratio_rot=self.config.damping_ratio_rot,
+                error_delta_pos=self.config.error_delta_pos,
+                error_delta_rot=self.config.error_delta_rot,
+                tcp_offset=self.config.tcp_offset,
+                set_payload=self.config.set_payload,
+                payload_mass=self.config.payload_mass, payload_cog=self.config.payload_cog,
+                use_gripper=self.config.use_gripper, gripper_port=self.config.gripper_port,
+                gripper_baudrate=self.config.gripper_baudrate,
+                joints_init=self.config.joints_init,
+                soft_real_time=self.config.soft_real_time,
+            )
+        elif backend == "servol":
+            self._controller = UR10ServoLBackend(
+                self.config.ip, frequency=self.config.frequency,
+                tcp_offset=self.config.tcp_offset,
+                set_payload=self.config.set_payload,
+                payload_mass=self.config.payload_mass, payload_cog=self.config.payload_cog,
+                use_gripper=self.config.use_gripper, gripper_port=self.config.gripper_port,
+                gripper_baudrate=self.config.gripper_baudrate,
+                joints_init=self.config.joints_init,
+                stream_frequency_hz=self.config.stream_frequency_hz,
+                servo_lookahead_time=self.config.servo_lookahead_time,
+                servo_gain=self.config.servo_gain,
+                reset_speed=self.config.reset_speed,
+                reset_acceleration=self.config.reset_acceleration,
+            )
+        else:
+            raise ValueError(
+                f"Unknown control_backend {self.config.control_backend!r}; "
+                "expected 'osc' or 'servol'."
+            )
         self._controller.start(wait=True)
 
         self._reset_realsense()
@@ -274,7 +313,10 @@ class UR10Follower(Robot):
         # Grip-at-start: open the gripper on reset (release the object) so the operator
         # re-grips during the reset window; else preserve the current gripper state.
         close = False if self.config.open_gripper_on_reset else (not self.gripper_is_open)
-        self._controller.set_target(
+        # move_to_pose: OSC drives the target via task-space PD (gentle, non-blocking);
+        # servoL runs a speed/accel-limited blocking moveL. Either way the settle sleep
+        # below is the operator's reposition/grip window.
+        self._controller.move_to_pose(
             [home[0], home[1], home[2], rotvec[0], rotvec[1], rotvec[2]], close_gripper=close
         )
         self.gripper_is_open = not close

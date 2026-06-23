@@ -34,6 +34,7 @@ from ur10_follower import UR10Follower, UR10FollowerConfig
 # bounds, reset-home pose AND the gamepad jog feel can NEVER drift from what produced the
 # dataset. A crop or bounds mismatch is a silent eval failure (OOD images / clipped actions).
 from record_ur10_follower import (  # noqa: E402
+    CONTROL_BACKEND,
     CAMERAS,
     CROP_BOXES,
     EE_BOUNDS_MIN,
@@ -90,6 +91,7 @@ def main() -> None:
 
     config = UR10FollowerConfig(
         id="ur10_follower", ip=ROBOT_IP, frequency=500,
+        control_backend=CONTROL_BACKEND,
         kp_pos=5000.0, kp_rot=100.0, use_yaw=True, use_gripper=True, set_payload=False,
         payload_mass=1.3, cameras=CAMERAS, resolution=(224, 224), crop_boxes=CROP_BOXES,
         ee_bounds_min=EE_BOUNDS_MIN, ee_bounds_max=EE_BOUNDS_MAX,

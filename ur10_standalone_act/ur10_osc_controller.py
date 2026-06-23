@@ -132,6 +132,13 @@ class UR10OSCController(mp.Process):
             self._tgt[7] = 1.0  # valid
         return pose
 
+    def move_to_pose(self, pose, close_gripper=False):
+        """Interface parity with the servoL backend. For the impedance controller a
+        'move' is just a new absolute target — the task-space PD drives there gently,
+        bounded by `error_delta` and the torque limits, so there is no separate blocking
+        moveL. The caller (follower.go_to_home) does the settle sleep. Non-blocking."""
+        return self.set_target(pose, close_gripper=close_gripper)
+
     def get_state(self):
         """Latest robot state as a dict (q, qd, tcp pose, timestamp)."""
         with self._state.get_lock():
