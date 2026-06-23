@@ -29,16 +29,25 @@ import numpy as np
 from scipy.spatial.transform import Rotation as Rot
 
 from ur10_osc_controller import UR10OSCController
+from ur10_servol_backend import UR10ServoLBackend
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Find UR10e EE/yaw bounds via gamepad jog")
     p.add_argument("--ip", type=str, default="192.168.0.100")
     p.add_argument("--frequency", type=int, default=500)
+    # Backend used to jog the arm. "servol" matches the record/eval default; "osc" uses
+    # the compliant torque controller. Limits are geometric (backend-independent) — pick
+    # whichever jog feel you prefer.
+    p.add_argument("--control_backend", type=str, default="servol", choices=["osc", "servol"])
     p.add_argument("--kp_pos", type=float, default=5000.0)
     p.add_argument("--kp_rot", type=float, default=100.0)
     p.add_argument("--set_payload", action="store_true", default=False)
     p.add_argument("--payload_mass", type=float, default=1.3)
+    # servoL streaming params (used when --control_backend servol).
+    p.add_argument("--stream_frequency_hz", type=int, default=200)
+    p.add_argument("--servo_lookahead_time", type=float, default=0.15)
+    p.add_argument("--servo_gain", type=float, default=100.0)
     p.add_argument("--no_soft_real_time", dest="soft_real_time", action="store_false", default=True)
     p.add_argument("--fps", type=int, default=50)
     p.add_argument("--warmup_time_s", type=float, default=5.0)
@@ -59,12 +68,21 @@ def main() -> None:
     from lerobot.teleoperators.gamepad.configuration_gamepad import GamepadTeleopConfig
     from lerobot.utils.robot_utils import precise_sleep
 
-    ctrl = UR10OSCController(
-        args.ip, frequency=args.frequency, kp_pos=args.kp_pos, kp_rot=args.kp_rot,
-        set_payload=args.set_payload, payload_mass=args.payload_mass,
-        use_gripper=True, soft_real_time=args.soft_real_time,
-    )
-    print(f"Starting OSC controller (UR10e @ {args.ip}) ...")
+    if args.control_backend == "osc":
+        ctrl = UR10OSCController(
+            args.ip, frequency=args.frequency, kp_pos=args.kp_pos, kp_rot=args.kp_rot,
+            set_payload=args.set_payload, payload_mass=args.payload_mass,
+            use_gripper=True, soft_real_time=args.soft_real_time,
+        )
+    else:
+        ctrl = UR10ServoLBackend(
+            args.ip, frequency=args.frequency,
+            set_payload=args.set_payload, payload_mass=args.payload_mass,
+            use_gripper=True,
+            stream_frequency_hz=args.stream_frequency_hz,
+            servo_lookahead_time=args.servo_lookahead_time, servo_gain=args.servo_gain,
+        )
+    print(f"Starting {args.control_backend} backend (UR10e @ {args.ip}) ...")
     ctrl.start(wait=True)
     teleop = GamepadTeleop(GamepadTeleopConfig(
         use_gripper=True, use_yaw=True,

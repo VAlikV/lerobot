@@ -61,7 +61,7 @@ def main():
     p.add_argument("--ee_step_y", type=float, default=0.001)
     p.add_argument("--ee_step_z", type=float, default=0.001)
     p.add_argument("--yaw_step", type=float, default=0.006)
-    p.add_argument("--use_yaw", action="store_true", default=False)
+    p.add_argument("--use_yaw", action="store_true", default=True)
     p.add_argument("--invert_delta_x", action="store_true", default=True)
     p.add_argument("--invert_delta_y", action="store_true", default=True)
     p.add_argument("--invert_delta_z", action="store_true", default=False)
