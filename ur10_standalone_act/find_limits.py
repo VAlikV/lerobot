@@ -44,6 +44,9 @@ def main() -> None:
     p.add_argument("--kp_rot", type=float, default=100.0)
     p.add_argument("--set_payload", action="store_true", default=False)
     p.add_argument("--payload_mass", type=float, default=1.3)
+    # Optional: drive to this absolute TCP [x y z rx ry rz] at startup (move_to_pose)
+    # before jogging — handy to start limit-finding from a known home/pre-pose.
+    p.add_argument("--home_tcp", type=float, nargs=6, default=None)
     # servoL streaming params (used when --control_backend servol).
     p.add_argument("--stream_frequency_hz", type=int, default=200)
     p.add_argument("--servo_lookahead_time", type=float, default=0.15)
@@ -84,6 +87,18 @@ def main() -> None:
         )
     print(f"Starting {args.control_backend} backend (UR10e @ {args.ip}) ...")
     ctrl.start(wait=True)
+
+    # Optional: drive to a known home pose before jogging (servoL = blocking moveL,
+    # OSC = task-space PD target). Lets you start limit-finding from a fixed pre-pose.
+    if args.home_tcp is not None:
+        before = ctrl.get_current_tcp()
+        print(f"[home] move_to_pose -> {np.round(args.home_tcp, 4).tolist()}  "
+              f"(from {np.round(before, 4).tolist()})")
+        ctrl.move_to_pose(args.home_tcp)
+        time.sleep(0.5)
+        after = ctrl.get_current_tcp()
+        err_mm = float(np.linalg.norm(np.array(after[:3]) - np.array(args.home_tcp[:3]))) * 1000.0
+        print(f"[home] TCP now {np.round(after, 4).tolist()}  (landing err {err_mm:.2f} mm)")
     teleop = GamepadTeleop(GamepadTeleopConfig(
         use_gripper=True, use_yaw=True,
         invert_delta_x=args.invert_delta_x, invert_delta_y=args.invert_delta_y,
