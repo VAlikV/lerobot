@@ -40,6 +40,7 @@ import threading
 import time
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,18 @@ class UR10ServoLBackend:
         self._stream_failed = threading.Event()
         self._stream_thread = None
 
+        # Which RTDE input-register bank the live rtde_c occupies. A wedged session never
+        # releases its bank (the controller keeps the claim while our process holds the
+        # socket), so wedge recovery reconnects on the *opposite* bank — see
+        # _ctrl_call_with_deadline.
+        self._ctrl_upper_range = False
+
+        # Monotonic timestamp of the stream loop's last iteration. If the loop wedges
+        # inside a C++ servoL call (dead control script) the thread stays alive but stops
+        # beating — is_alive() uses staleness to catch this, since thread-aliveness alone
+        # can't.
+        self._stream_beat: float = 0.0
+
         # Gripper command tracking (send only on transition; keep serial off the hot path).
         self._gripper_closed = False
 
@@ -140,6 +153,7 @@ class UR10ServoLBackend:
         self._stop_event.clear()
         self._pause_event.clear()
         self._stream_failed.clear()
+        self._stream_beat = time.monotonic()
         self._stream_thread = threading.Thread(target=self._stream_loop, name="UR10ServoLStream",
                                                daemon=True)
         self._stream_thread.start()
@@ -175,10 +189,20 @@ class UR10ServoLBackend:
         logger.info("[servol] backend stopped.")
 
     def is_alive(self) -> bool:
-        return (self._connected
+        if not (self._connected
                 and self._stream_thread is not None
                 and self._stream_thread.is_alive()
-                and not self._stream_failed.is_set())
+                and not self._stream_failed.is_set()):
+            return False
+        # A thread wedged inside a C++ servoL call (dead control script) stays alive
+        # forever but stops iterating — catch it by heartbeat staleness. Every loop
+        # iteration (incl. the 10 ms pause branch) beats, so an intentional pause never
+        # trips this; 2 s is comfortably above any single healthy servoL (~stream_dt).
+        if self._stream_beat and (time.monotonic() - self._stream_beat > 2.0):
+            logger.error("[servol] stream heartbeat stale (>2s); thread appears wedged in "
+                         "a blocking RTDE call — reporting unhealthy")
+            return False
+        return True
 
     @property
     def is_ready(self) -> bool:
@@ -236,12 +260,41 @@ class UR10ServoLBackend:
         """
         pose = list(np.asarray(pose, dtype=float).reshape(6))
         streaming = self._stream_thread is not None and self._stream_thread.is_alive()
+
+        # If already within tolerance of the target and streaming is live, skip the
+        # pause/servoStop/moveL cycle and let servoL absorb the residual. servoStop is
+        # this controller's known wedge site — every crossing we avoid is a wedge we can't
+        # hit (makes back-to-back resets at home wedge-free).
+        if streaming and not self._stream_failed.is_set():
+            cur = self.get_current_tcp()
+            pos_err = float(np.linalg.norm(np.asarray(pose[:3]) - np.asarray(cur[:3])))
+            rot_err = float(np.linalg.norm(
+                (Rotation.from_rotvec(pose[3:6]).inv() * Rotation.from_rotvec(cur[3:6])).as_rotvec()
+            ))
+            if pos_err < 2e-3 and rot_err < 0.02:
+                with self._target_lock:
+                    self._target = list(pose)
+                logger.info("[servol] move_to_pose: already at target (%.2f mm, %.4f rad off) "
+                            "— letting servoL converge, skipping servoStop/moveL",
+                            pos_err * 1e3, rot_err)
+                self._apply_gripper(close_gripper)
+                return np.asarray(pose, dtype=float)
+
         if streaming:
             self._pause_event.set()
-            # servoStop is required: moveL does not implicitly leave servoL mode on this
-            # firmware, so without it the moveL is silently dropped. Deadline-guarded
-            # because servoStop wedges after a few cycles.
-            self._ctrl_call_with_deadline("servoStop", lambda: self.rtde_c.servoStop(10.0), 2.0)
+            # moveL does not implicitly leave servoL mode on this firmware, so the mode
+            # must be exited first. But servoStop wedges forever when the control script
+            # has died (it polls for an ack the dead script can never send) — so if the
+            # script isn't running, reupload it (a fresh script starts outside servo mode,
+            # no servoStop needed) instead. Deadline-guarded either way.
+            def _stop_servo_or_reupload():
+                if self.rtde_c.isProgramRunning():
+                    self.rtde_c.servoStop(10.0)
+                elif not self.rtde_c.reuploadScript():
+                    raise RuntimeError(
+                        "RTDE control script not running and reuploadScript failed "
+                        "(robot may be protective-stopped or in local mode)")
+            self._ctrl_call_with_deadline("servoStop", _stop_servo_or_reupload, 5.0)
         try:
             with self._ctrl_lock:
                 self.rtde_c.moveL(pose, self.reset_speed, self.reset_acceleration, False)
@@ -272,6 +325,7 @@ class UR10ServoLBackend:
         concurrent access to the RTDEReceive socket.
         """
         while not self._stop_event.is_set():
+            self._stream_beat = time.monotonic()   # heartbeat (incl. pause branch below)
             if self._pause_event.is_set():
                 self._stop_event.wait(timeout=0.01)
                 continue
@@ -323,9 +377,37 @@ class UR10ServoLBackend:
             self.rtde_c.disconnect()
         except Exception:
             logger.exception("[servol] old rtde_c.disconnect failed (continuing)")
+        # The wedged session's register-bank claim is NOT released by disconnect(): the
+        # controller keeps it alive as long as our process holds the old socket, so
+        # reconnecting on the same registers fails with "RTDE input registers are already
+        # in use" no matter how long we wait. ur_rtde exposes a second, disjoint bank
+        # (FLAG_UPPER_RANGE_REGISTERS): reconnect on the opposite bank of the one the
+        # stuck session occupies, with the same bank as a fallback in case the claim was
+        # released after all.
         try:
             import rtde_control
-            new_ctrl = rtde_control.RTDEControlInterface(self.robot_ip, float(self.frequency))
+            upload = int(rtde_control.RTDEControlInterface.FLAG_UPLOAD_SCRIPT)
+            upper = int(rtde_control.RTDEControlInterface.FLAG_UPPER_RANGE_REGISTERS)
+            flip_flags = upload | (0 if self._ctrl_upper_range else upper)
+            same_flags = upload | (upper if self._ctrl_upper_range else 0)
+            new_ctrl = None
+            last_err: Exception | None = None
+            for flags in (flip_flags, same_flags):
+                time.sleep(0.5)
+                try:
+                    new_ctrl = rtde_control.RTDEControlInterface(
+                        self.robot_ip, float(self.frequency), flags
+                    )
+                    self._ctrl_upper_range = bool(flags & upper)
+                    logger.info("[servol] rtde_c reconnected on %s register bank",
+                                "upper" if flags & upper else "lower")
+                    break
+                except RuntimeError as e:
+                    last_err = e
+                    logger.warning("[servol] rtde_c reconnect on %s register bank failed: %s",
+                                   "upper" if flags & upper else "lower", e)
+            if new_ctrl is None:
+                raise last_err if last_err is not None else RuntimeError("reconnect failed")
             new_lock = threading.Lock()
             with new_lock:
                 if self.set_payload:
