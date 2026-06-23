@@ -131,6 +131,7 @@ def main() -> None:
     fixed_rot = None
     home_rot = None
     target_yaw = 0.0
+    gripper_close = False
     tcp_min = tcp_max = None
     yaw_min = yaw_max = 0.0
     start_t = time.perf_counter()
@@ -145,6 +146,11 @@ def main() -> None:
                 print("\n[main] controller died — aborting."); break
             a, d = _read()
             enabled = bool(teleop.gamepad.should_intervene())
+            grip = int(a.get("gripper", 1))   # 0=close, 1=stay, 2=open
+            if grip == 0:
+                gripper_close = True
+            elif grip == 2:
+                gripper_close = False
             if enabled:
                 target_xyz = target_xyz + np.array(
                     [_dz(d[0] - bias[0]), _dz(d[1] - bias[1]), _dz(d[2] - bias[2])],
@@ -159,7 +165,8 @@ def main() -> None:
             else:
                 R_t = home_rot * Rot.from_euler("z", target_yaw)
                 rx, ry, rz = (float(v) for v in R_t.as_rotvec())
-            ctrl.set_target([float(target_xyz[0]), float(target_xyz[1]), float(target_xyz[2]), rx, ry, rz])
+            ctrl.set_target([float(target_xyz[0]), float(target_xyz[1]), float(target_xyz[2]), rx, ry, rz],
+                            close_gripper=gripper_close)
 
             elapsed = time.perf_counter() - start_t
             if elapsed < args.warmup_time_s:
