@@ -57,6 +57,59 @@ class SACPolicy(
         self._init_actor(continuous_action_dim)
         self._init_temperature()
 
+        # Residual mode: load frozen base policy. Bypass nn.Module __setattr__
+        # so the base policy is NOT registered as a child module — keeps its
+        # params out of state_dict / optim groups / gRPC parameter sync.
+        object.__setattr__(self, "_base_policy", None)
+        if getattr(self.config, "residual_mode", False):
+            object.__setattr__(self, "_base_policy", self._load_base_policy())
+
+        # Pre-build a (1, A) tensor of residual scales for fast broadcast.
+        scale = self.config.residual_action_scale
+        if isinstance(scale, (list, tuple)):
+            assert len(scale) == continuous_action_dim, (
+                f"residual_action_scale list length {len(scale)} != action_dim {continuous_action_dim}"
+            )
+            scale_tensor = torch.tensor(list(scale), dtype=torch.float32)
+        else:
+            scale_tensor = torch.full((continuous_action_dim,), float(scale), dtype=torch.float32)
+        # store as buffer so it moves with .to(device) and survives ckpt load.
+        self.register_buffer("residual_scale_buf", scale_tensor.view(1, -1))
+
+    def _load_base_policy(self):
+        """Load + freeze base policy for residual mode (called only when residual_mode=True)."""
+        cfg = self.config
+        if cfg.base_policy_path is None:
+            raise ValueError("residual_mode=True requires base_policy_path")
+        from lerobot.configs.policies import PreTrainedConfig
+        base_cfg = PreTrainedConfig.from_pretrained(cfg.base_policy_path)
+        if cfg.base_policy_type == "act":
+            from lerobot.policies.act.modeling_act import ACTPolicy as _Cls
+        elif cfg.base_policy_type == "diffusion":
+            from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy as _Cls
+        else:
+            raise ValueError(f"Unknown base_policy_type {cfg.base_policy_type}")
+        base = _Cls.from_pretrained(cfg.base_policy_path, config=base_cfg)
+        base.eval()
+        if cfg.freeze_base_policy:
+            for p in base.parameters():
+                p.requires_grad = False
+        base = base.to(cfg.device)
+        # CRITICAL: load preprocessor so raw uint8 images + raw state get
+        # normalized exactly like during BC training. Without this, ACT
+        # outputs garbage (incl. wrong gripper). Postprocessor is intentionally
+        # skipped: residual mode expects base_action in normalized [-1,1].
+        from lerobot.policies.factory import make_pre_post_processors
+        _pre, _ = make_pre_post_processors(
+            policy_cfg=base_cfg, pretrained_path=cfg.base_policy_path,
+        )
+        object.__setattr__(base, "_pre_processor", _pre)
+        return base
+
+    @property
+    def base_policy(self):
+        return self._base_policy
+
     def get_optim_params(self) -> dict:
         optim_params = {
             "actor": [
@@ -83,6 +136,23 @@ class SACPolicy(
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
         """Select action for inference/evaluation"""
+
+        # Residual mode: base_action is expected to already be in `batch`
+        # (attached by the actor-process env wrapper before each obs flows in).
+        # Here we just read it, sample the residual, and clip the combined action.
+        if getattr(self.config, "residual_mode", False):
+            base_action = batch["observation.base_action"]
+            observations_features = None
+            if self.shared_encoder and self.actor.encoder.has_images:
+                observations_features = self.actor.encoder.get_cached_image_features(batch)
+            residual, _, _ = self.actor(batch, observations_features)
+            residual = residual * self.residual_scale_buf
+            actions = torch.clamp(base_action + residual, -1.0, 1.0)
+            if self.config.num_discrete_actions is not None:
+                discrete_action_value = self.discrete_critic(batch, observations_features)
+                discrete_action = torch.argmax(discrete_action_value, dim=-1, keepdim=True)
+                actions = torch.cat([actions, discrete_action], dim=-1)
+            return actions
 
         observations_features = None
         if self.shared_encoder and self.actor.encoder.has_images:
@@ -177,6 +247,7 @@ class SACPolicy(
                 done=done,
                 observation_features=observation_features,
                 next_observation_features=next_observation_features,
+                critic_warmup=bool(batch.get("critic_warmup", False)),
             )
 
             return {"loss_critic": loss_critic}
@@ -200,12 +271,24 @@ class SACPolicy(
             )
             return {"loss_discrete_critic": loss_discrete_critic}
         if model == "actor":
-            return {
-                "loss_actor": self.compute_loss_actor(
-                    observations=observations,
-                    observation_features=observation_features,
-                )
-            }
+            bc_observations = batch.get("bc_state")
+            bc_actions = batch.get("bc_action")
+            bc_observation_features = batch.get("bc_observation_feature")
+            bc_weights = batch.get("bc_weights")
+            bc_loss_weight = float(batch.get("bc_loss_weight", 0.0))
+
+            actor_loss, info = self.compute_loss_actor(
+                observations=observations,
+                observation_features=observation_features,
+                bc_observations=bc_observations,
+                bc_actions=bc_actions,
+                bc_observation_features=bc_observation_features,
+                bc_weights=bc_weights,
+                bc_loss_weight=bc_loss_weight,
+            )
+            out = {"loss_actor": actor_loss}
+            out.update(info)
+            return out
 
         if model == "temperature":
             return {
@@ -253,9 +336,30 @@ class SACPolicy(
         done,
         observation_features: Tensor | None = None,
         next_observation_features: Tensor | None = None,
+        critic_warmup: bool = False,
     ) -> Tensor:
         with torch.no_grad():
-            next_action_preds, next_log_probs, _ = self.actor(next_observations, next_observation_features)
+            residual_mode = getattr(self.config, "residual_mode", False)
+            if critic_warmup and residual_mode:
+                # Bootstrap: TD target uses frozen base policy action (δ=0)
+                # → critic learns Q^{π_base}. Entropy term inert (log_prob=0).
+                next_action_preds = next_observations["observation.base_action"]
+                next_log_probs = torch.zeros(
+                    next_action_preds.shape[0],
+                    device=next_action_preds.device,
+                    dtype=next_action_preds.dtype,
+                )
+            else:
+                next_action_preds, next_log_probs, _ = self.actor(next_observations, next_observation_features)
+
+                # Residual mode: actor predicts residual; combine w/ next-step base_action and clip.
+                if residual_mode:
+                    next_base = next_observations["observation.base_action"]
+                    next_action_preds = torch.clamp(
+                        next_base + next_action_preds * self.residual_scale_buf,
+                        -1.0,
+                        1.0,
+                    )
 
             # 2- compute q targets
             q_targets = self.critic_forward(
@@ -278,6 +382,11 @@ class SACPolicy(
                 min_q = min_q - (self.temperature * next_log_probs)
 
             td_target = rewards + (1 - done) * self.config.discount * min_q
+
+            if getattr(self.config, "clip_q_target_to_reward_range", False):
+                td_target = torch.clamp(
+                    td_target, self.config.q_target_clip_min, self.config.q_target_clip_max
+                )
 
         # 3- compute predicted qs
         if self.config.num_discrete_actions is not None:
@@ -376,8 +485,21 @@ class SACPolicy(
         self,
         observations,
         observation_features: Tensor | None = None,
-    ) -> Tensor:
+        bc_observations: dict[str, Tensor] | None = None,
+        bc_actions: Tensor | None = None,
+        bc_observation_features: Tensor | None = None,
+        bc_weights: Tensor | None = None,
+        bc_loss_weight: float = 0.0,
+    ) -> tuple[Tensor, dict[str, Tensor]]:
         actions_pi, log_probs, _ = self.actor(observations, observation_features)
+
+        if getattr(self.config, "residual_mode", False):
+            base = observations["observation.base_action"]
+            actions_pi = torch.clamp(
+                base + actions_pi * self.residual_scale_buf,
+                -1.0,
+                1.0,
+            )
 
         q_preds = self.critic_forward(
             observations=observations,
@@ -387,8 +509,48 @@ class SACPolicy(
         )
         min_q_preds = q_preds.min(dim=0)[0]
 
-        actor_loss = ((self.temperature * log_probs) - min_q_preds).mean()
-        return actor_loss
+        sac_loss = ((self.temperature * log_probs) - min_q_preds).mean()
+
+        info: dict[str, Tensor] = {"loss_actor_sac": sac_loss.detach()}
+
+        if bc_loss_weight > 0.0 and bc_actions is not None and bc_observations is not None:
+            # Reparameterize: take demo (obs, action) and score under current policy.
+            # Use mean (no tanh) → invert tanh on demo action to get pre-squash target.
+            obs_enc = self.actor.encoder(
+                bc_observations,
+                cache=bc_observation_features,
+                detach=self.actor.encoder_is_shared,
+            )
+            outputs = self.actor.network(obs_enc)
+            means = self.actor.mean_layer(outputs)
+            if self.actor.fixed_std is None:
+                log_std = self.actor.std_layer(outputs)
+                std = torch.exp(log_std)
+                std = torch.maximum(std, self.actor.std_min_buf)
+                std = torch.minimum(std, self.actor.std_max_buf)
+            else:
+                std = self.actor.fixed_std.expand_as(means)
+
+            dist = TanhMultivariateNormalDiag(loc=means, scale_diag=std)
+            # Buffer may store [continuous..., discrete]; actor only models continuous dims.
+            target = bc_actions[..., : self.actor.action_dim]
+            if self.actor.use_tanh_squash:
+                target = target.clamp(-1.0 + 1e-6, 1.0 - 1e-6)
+            log_prob_demo = dist.log_prob(target)  # (B,)
+
+            if bc_weights is None:
+                bc_loss = -log_prob_demo.mean()
+            else:
+                w = bc_weights.to(log_prob_demo.device, log_prob_demo.dtype)
+                # Weighted mean (weights pre-normalized to sum=B by RABCWeights).
+                bc_loss = -(w * log_prob_demo).sum() / (w.sum() + 1e-6)
+
+            info["loss_actor_bc"] = bc_loss.detach()
+            actor_loss = sac_loss + bc_loss_weight * bc_loss
+        else:
+            actor_loss = sac_loss
+
+        return actor_loss, info
 
     def _init_encoders(self):
         """Initialize shared or separate encoders for actor and critic."""
@@ -540,6 +702,10 @@ class SACObservationEncoder(nn.Module):
             out += self.config.latent_dim
         if self.has_state:
             out += self.config.latent_dim
+        # Residual mode: concat raw base action vector at the encoder tail so
+        # both actor (residual) and critic see the base action.
+        if getattr(self.config, "residual_mode", False):
+            out += int(self.config.output_features[ACTION].shape[0])
         self._out_dim = out
 
     def forward(
@@ -554,6 +720,8 @@ class SACObservationEncoder(nn.Module):
             parts.append(self.env_encoder(obs[OBS_ENV_STATE]))
         if self.has_state:
             parts.append(self.state_encoder(obs[OBS_STATE]))
+        if getattr(self.config, "residual_mode", False):
+            parts.append(obs["observation.base_action"])
         if parts:
             return torch.cat(parts, dim=-1)
 
@@ -802,8 +970,8 @@ class Policy(nn.Module):
         encoder: SACObservationEncoder,
         network: nn.Module,
         action_dim: int,
-        std_min: float = -5,
-        std_max: float = 2,
+        std_min: float | list[float] = -5,
+        std_max: float | list[float] = 2,
         fixed_std: torch.Tensor | None = None,
         init_final: float | None = None,
         use_tanh_squash: bool = False,
@@ -813,8 +981,18 @@ class Policy(nn.Module):
         self.encoder: SACObservationEncoder = encoder
         self.network = network
         self.action_dim = action_dim
-        self.std_min = std_min
-        self.std_max = std_max
+        # Per-dim std bounds: pass a scalar (broadcast) or a list of length
+        # action_dim. Stored as buffers so they move with .to(device).
+        def _to_bound(v, n):
+            if isinstance(v, (list, tuple)):
+                assert len(v) == n, f"std bound list len {len(v)} != action_dim {n}"
+                return torch.tensor(list(v), dtype=torch.float32)
+            return torch.full((n,), float(v), dtype=torch.float32)
+        self.register_buffer("std_min_buf", _to_bound(std_min, action_dim))
+        self.register_buffer("std_max_buf", _to_bound(std_max, action_dim))
+        # Keep scalar attrs for code that may still read them (e.g. logging).
+        self.std_min = std_min if isinstance(std_min, (int, float)) else float(min(std_min))
+        self.std_max = std_max if isinstance(std_max, (int, float)) else float(max(std_max))
         self.fixed_std = fixed_std
         self.use_tanh_squash = use_tanh_squash
         self.encoder_is_shared = encoder_is_shared
@@ -858,7 +1036,9 @@ class Policy(nn.Module):
         if self.fixed_std is None:
             log_std = self.std_layer(outputs)
             std = torch.exp(log_std)  # Match JAX "exp"
-            std = torch.clamp(std, self.std_min, self.std_max)  # Match JAX default clip
+            # Per-dim clamp via broadcasting buffers (shape [action_dim]).
+            std = torch.maximum(std, self.std_min_buf)
+            std = torch.minimum(std, self.std_max_buf)
         else:
             std = self.fixed_std.expand_as(means)
 
