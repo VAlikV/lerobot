@@ -52,20 +52,17 @@ def _log(msg: str) -> None:
 
 
 # -- user-tunable ---------------------------------------------------------------
-DATASET_REPO_ID = "local/pcb_act_3cams_yaw_v2_1"
-OUTPUT_DIR = Path("outputs/act/ur10/pcb_act_3cams_yaw_v2_1")
-TRAINING_STEPS = 100_000
+DATASET_REPO_ID = "local/pcb_act_3cams_yaw_relative_2finetune"
+OUTPUT_DIR = Path("outputs/act/ur10/local/pcb_act_3cams_yaw_relative_2finetune")
+TRAINING_STEPS = 25_000
 BATCH_SIZE = 32
 
-# Optional fine-tuning: load weights from a previous run before training.
-# Useful for HG-DAgger or iterating on a fresh demo set.
-PRETRAINED_PATH = "outputs/act/ur10/pcb_act_3cams_yaw_v2_1/last"
-
-# PRETRAINED_PATH: str | None = None
+# Fine-tuning: load weights from the previous fine-tuned model (30-ep finetune).
+PRETRAINED_PATH: str | None = "outputs/act/ur10/pcb_act_3cams_yaw_relative/step_70000"
 
 # Checkpointing & logging
 LOG_FREQ = 100
-SAVE_FREQ = 10_000
+SAVE_FREQ = 2_500
 DEVICE = "cuda"
 NUM_WORKERS = 4
 # -------------------------------------------------------------------------------
@@ -94,12 +91,17 @@ def main() -> None:
     _log(f"[train_v2] Inputs : { {k: tuple(v.shape) for k, v in input_features.items()} }")
     _log(f"[train_v2] Outputs: { {k: tuple(v.shape) for k, v in output_features.items()} }")
 
-    # Default ACTConfig: chunk_size=100, n_action_steps=100, temporal_ensemble_coeff=None,
-    # MEAN_STD normalization, ResNet-18 vision encoder, 4-layer transformer encoder/decoder.
-    # These are the published defaults that RC10's working ACT pipeline uses unchanged.
+    # chunk_size=20 → 2 s prediction horizon at 10 Hz.
+    # Default of 100 (3.3 s at 30 Hz) is far too large for these ~120-frame
+    # episodes at 10 Hz: most frames near episode end can't form a full chunk.
+    # temporal_ensemble_coeff=None: execute the predicted 20-step chunk in one
+    # shot before re-querying (no per-step averaging).
     cfg = ACTConfig(
         input_features=input_features,
         output_features=output_features,
+        chunk_size=20,
+        n_action_steps=20,
+        temporal_ensemble_coeff=None,
         device=DEVICE,
     )
     _log(

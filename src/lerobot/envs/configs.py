@@ -243,6 +243,7 @@ class ResetConfig:
     terminate_on_success: bool = True
     randomization_xy: float = 0.0   # metres; uniform noise added to home x,y at each reset
     randomization_z: float = 0.0    # metres; uniform noise added to home z at each reset
+    randomization_yaw: float = 0.0  # radians; uniform noise added to home yaw at each reset
 
 
 @dataclass
