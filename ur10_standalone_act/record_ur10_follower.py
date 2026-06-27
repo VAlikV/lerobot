@@ -184,7 +184,12 @@ def main() -> None:
                 robot_action_processor=robot_action_processor,
                 robot_observation_processor=robot_observation_processor,
                 teleop=teleop, control_time_s=RESET_TIME_S,
-                single_task=TASK_DESCRIPTION, display_data=USE_RERUN,
+                # display_data=False here on purpose: the reset window saves nothing, but
+                # record_loop still streams to Rerun whenever display_data is true. Showing
+                # it made Rerun "come alive" during reset — looking like recording had
+                # started ~RESET_TIME_S before the "RECORDING NOW" banner. Rerun now lights
+                # up only for the real record_loop below, in sync with the banner.
+                single_task=TASK_DESCRIPTION, display_data=False,
             )
             events["exit_early"] = False
             events["episode_failed"] = False
