@@ -94,6 +94,10 @@ NUM_EPISODES = 30
 FPS = 30
 EPISODE_TIME_S = 30      # safety upper bound; end early with TRIANGLE
 RESET_TIME_S = 5         # reposition + grip window (gamepad, not recorded)
+# If the episode hits EPISODE_TIME_S without a TRIANGLE keep, the correction is treated
+# as incomplete and re-done (discarded, same slot retried) instead of saved. A button
+# press (keep/redo/discard) always wins. Set False to save timed-out corrections.
+REDO_ON_TIMEOUT = True
 
 # HG-DAgger: keep an episode only if the operator actually corrected it (>=1 R1 frame).
 # Uncorrected rollouts add nothing useful (success) or are harmful to train on
@@ -196,9 +200,11 @@ def main() -> None:
             policy.reset()
             events["exit_early"] = False
             events["rerecord_episode"] = False
+            events["episode_failed"] = False
             _banner(f"  ●  POLICY RUNNING (HG-DAgger) — episode {episode_idx + 1}/{NUM_EPISODES}\n"
                     f"  HOLD R1 to CORRECT (gamepad overrides + records the fix).\n"
-                    f"  TRIANGLE=keep, SQUARE=redo, CROSS=stop (auto-ends after {EPISODE_TIME_S}s).")
+                    f"  TRIANGLE=keep, CIRCLE=discard, SQUARE=redo, CROSS=stop "
+                    f"(auto-ends after {EPISODE_TIME_S}s).")
             log_say(f"Episode {episode_idx + 1}", USE_TTS)
 
             step = 0
@@ -248,14 +254,18 @@ def main() -> None:
                     log_rerun_data(observation=obs, action=action_dict)
 
                 # Async edge-detected episode buttons (same contract as record).
-                if events["stop_recording"]:
+                if events["stop_recording"]:        # CROSS -> stop session
                     status = "STOP"
                     break
-                if events["rerecord_episode"]:
+                if events["rerecord_episode"]:      # SQUARE -> redo
                     status = "REDO"
                     redo = True
                     break
-                if events["exit_early"]:
+                if events["episode_failed"]:        # CIRCLE -> discard this correction
+                    status = "DISCARD"
+                    redo = True
+                    break
+                if events["exit_early"]:            # TRIANGLE -> keep
                     status = "KEEP"
                     break
                 if step >= int(EPISODE_TIME_S * FPS):
@@ -275,9 +285,15 @@ def main() -> None:
             if status == "STOP":
                 dataset.clear_episode_buffer()
                 break
-            if redo:
+            if redo:                              # SQUARE redo or CIRCLE discard
                 events["rerecord_episode"] = False
+                events["episode_failed"] = False
                 events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
+            if REDO_ON_TIMEOUT and status == "TIMEOUT":
+                print(f"  ↳ TIMEOUT ({EPISODE_TIME_S}s, no TRIANGLE) — incomplete, "
+                      "discarding + redoing this episode.", flush=True)
                 dataset.clear_episode_buffer()
                 continue
             if SAVE_ONLY_CORRECTED_EPISODES and n_intervention == 0:

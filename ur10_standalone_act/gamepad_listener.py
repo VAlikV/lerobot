@@ -12,13 +12,19 @@ so there is no two-thread race on the global pygame event queue. The motion tele
 (`RelativeGamepadTeleop`) reads LATCHED state from here instead of pumping pygame
 itself.
 
-PS4 / pygame button map (same as lerobot GamepadController):
+PS4 / pygame button map (indices are what THIS controller actually reports):
     5 = R1 (deadman / intervention, HOLD to drive)
-    2 = Triangle (SUCCESS)  -> exit_early           (end episode + save)
-    3 = Square   (RERECORD) -> rerecord_episode + exit_early
-    1 = Cross    (FAILURE)  -> stop_recording + exit_early
+    2 = Triangle (SUCCESS)  -> exit_early                    (end episode + keep)
+    3 = Square   (RERECORD) -> rerecord_episode + exit_early (redo episode)
+    1 = Circle   (FAILURE)  -> episode_failed + exit_early   (end episode, NEXT one)
+    0 = Cross    (STOP)     -> stop_recording + exit_early   (stop the session)
     7 = open gripper (hold)        6 = close gripper (hold)
 Axes: 0=left-X, 1=left-Y, 4=right-Y (Z), 3=right-X (yaw).
+
+NOTE: `episode_failed` ends the current episode and advances to the next (a
+distinct outcome from STOP). record_loop consumers that don't read it simply
+treat the accompanying `exit_early` as "end this episode" — so Circle is safe
+in the record flow too (ends + saves), while Cross stops the session.
 """
 
 from __future__ import annotations
@@ -54,8 +60,11 @@ class GamepadListener(threading.Thread):
         self._sz = -1.0 if invert_z else 1.0
         self._syaw = -1.0 if invert_yaw else 1.0
 
-        # Shared, set by record_loop consumers. Same keys/contract as init_keyboard_listener.
-        self.events = {"exit_early": False, "rerecord_episode": False, "stop_recording": False}
+        # Shared, set by record_loop consumers. Same keys/contract as init_keyboard_listener,
+        # plus `episode_failed` (Circle): end the episode and advance to the NEXT one — a
+        # failure outcome that is NOT a session stop.
+        self.events = {"exit_early": False, "rerecord_episode": False,
+                       "stop_recording": False, "episode_failed": False}
 
         # Latched motion state (read by the teleop). Plain attributes — GIL makes
         # single-attribute read/write atomic enough for this use.
@@ -69,7 +78,7 @@ class GamepadListener(threading.Thread):
         self._err: str | None = None
         # Episode-button edge detection (rising edge = one trigger per physical press).
         # Maintained continuously across episodes so a HELD button never re-fires.
-        self._btn_prev = {1: False, 2: False, 3: False}
+        self._btn_prev = {0: False, 1: False, 2: False, 3: False}
 
     # -- lifecycle ----------------------------------------------------------
     def run(self) -> None:
@@ -128,13 +137,16 @@ class GamepadListener(threading.Thread):
                 self.gripper_open = False
 
             # --- episode buttons (rising-edge -> set events) ---
-            cur = {b: bool(self._joy.get_button(b)) for b in (1, 2, 3)}
+            cur = {b: bool(self._joy.get_button(b)) for b in (0, 1, 2, 3)}
             if cur[2] and not self._btn_prev[2]:        # Triangle = SUCCESS
                 self.events["exit_early"] = True
             elif cur[3] and not self._btn_prev[3]:      # Square = RERECORD
                 self.events["rerecord_episode"] = True
                 self.events["exit_early"] = True
-            elif cur[1] and not self._btn_prev[1]:      # Cross = FAILURE -> stop session
+            elif cur[1] and not self._btn_prev[1]:      # Circle = FAILURE -> next episode
+                self.events["episode_failed"] = True
+                self.events["exit_early"] = True
+            elif cur[0] and not self._btn_prev[0]:      # Cross = STOP -> end session
                 self.events["stop_recording"] = True
                 self.events["exit_early"] = True
             self._btn_prev = cur

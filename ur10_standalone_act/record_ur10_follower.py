@@ -61,6 +61,10 @@ NUM_EPISODES = 50
 FPS = 30
 EPISODE_TIME_S = 20          # record-window cap; end early with Triangle
 RESET_TIME_S = 5            # reposition + grip window (gamepad, not recorded)
+# If the episode hits EPISODE_TIME_S without a TRIANGLE save, the demo is treated as
+# incomplete/truncated and re-done (discarded, same slot retried) instead of saved.
+# Set False to save timed-out episodes. A button press (save/redo/discard) always wins.
+REDO_ON_TIMEOUT = True
 
 EE_STEP = (0.001, 0.001, 0.001)  # m per unit-action (R1 held)
 YAW_STEP = 0.006                 # rad per unit-action
@@ -183,6 +187,7 @@ def main() -> None:
                 single_task=TASK_DESCRIPTION, display_data=USE_RERUN,
             )
             events["exit_early"] = False
+            events["episode_failed"] = False
             if events["stop_recording"]:
                 break
 
@@ -190,7 +195,7 @@ def main() -> None:
             robot.capture_home()   # anchor: rel actions/obs relative to THIS pose
             teleop.reset()         # rel starts at 0 from the new home (also resets n_calls)
             _banner(f"  ●  RECORDING NOW — episode {episode_idx + 1}/{NUM_EPISODES}\n"
-                    f"  Do the task. Press TRIANGLE to SAVE, SQUARE to redo, CROSS to stop.\n"
+                    f"  Do the task. TRIANGLE=save, CIRCLE=discard, SQUARE=redo, CROSS=stop.\n"
                     f"  (auto-saves after {EPISODE_TIME_S}s)")
             log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}", USE_TTS)
             _t0 = time.perf_counter()
@@ -225,6 +230,21 @@ def main() -> None:
                 _banner("RE-RECORD requested (SQUARE) — discarding this episode")
                 log_say("Re-recording", USE_TTS)
                 events["rerecord_episode"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
+
+            if events["episode_failed"]:
+                _banner("FAILURE (CIRCLE) — discarding this take")
+                events["episode_failed"] = False
+                events["exit_early"] = False
+                dataset.clear_episode_buffer()
+                continue
+
+            if REDO_ON_TIMEOUT and _ended == "timeout":
+                _banner(f"TIMEOUT ({EPISODE_TIME_S}s, no TRIANGLE) — incomplete demo, "
+                        "discarding + redoing this episode")
+                log_say("Timeout — redoing episode", USE_TTS)
                 events["exit_early"] = False
                 dataset.clear_episode_buffer()
                 continue

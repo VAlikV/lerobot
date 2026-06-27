@@ -108,6 +108,7 @@ def main() -> None:
     ))
 
     episode_idx = 0
+    n_success = n_failure = 0
     robot_connected = teleop_connected = False
     try:
         robot.connect()
@@ -145,6 +146,7 @@ def main() -> None:
             policy.reset()
             events["exit_early"] = False
             events["rerecord_episode"] = False
+            events["episode_failed"] = False
             _banner(f"  ●  POLICY RUNNING — episode {episode_idx + 1}/{NUM_EPISODES}\n"
                     f"  TRIANGLE=success, SQUARE=redo, CROSS=stop session "
                     f"(auto-stops after {EPISODE_TIME_S}s).")
@@ -174,14 +176,17 @@ def main() -> None:
 
                 # Async edge-detected episode buttons (same contract as record):
                 #   CROSS -> stop_recording, SQUARE -> rerecord_episode, TRIANGLE -> exit_early.
-                if events["stop_recording"]:
+                if events["stop_recording"]:        # CROSS -> stop the whole session
                     status = "STOP"
                     break
-                if events["rerecord_episode"]:
+                if events["rerecord_episode"]:      # SQUARE -> redo this episode
                     status = "REDO"
                     redo = True
                     break
-                if events["exit_early"]:
+                if events["episode_failed"]:        # CIRCLE -> failure, advance to next
+                    status = "FAILURE"
+                    break
+                if events["exit_early"]:            # TRIANGLE -> success
                     status = "SUCCESS"
                     break
                 if step >= int(EPISODE_TIME_S * FPS):
@@ -198,6 +203,13 @@ def main() -> None:
                 events["rerecord_episode"] = False
                 events["exit_early"] = False
                 continue
+            # SUCCESS / FAILURE / TIMEOUT all count as a completed episode and advance.
+            if status == "SUCCESS":
+                n_success += 1
+            else:                     # FAILURE (CIRCLE) or TIMEOUT
+                n_failure += 1
+            events["episode_failed"] = False
+            events["exit_early"] = False
             episode_idx += 1
 
     except KeyboardInterrupt:
@@ -205,6 +217,10 @@ def main() -> None:
     except Exception:
         logger.exception("Inference failed")
     finally:
+        done = n_success + n_failure
+        if done:
+            _banner(f"EVAL SUMMARY — {n_success}/{done} success "
+                    f"({100.0 * n_success / done:.0f}%), {n_failure} failure/timeout")
         if robot_connected:
             try:
                 robot.disconnect()
