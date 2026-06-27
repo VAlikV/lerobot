@@ -168,3 +168,24 @@ class RelativeGamepadTeleop(Teleoperator):
         if self._listener is None:
             return {}
         return {TeleopEvents.IS_INTERVENTION: bool(self._listener.should_intervene())}
+
+    # -- HG-DAgger handoff -------------------------------------------------
+    def should_intervene(self) -> bool:
+        """True while R1 (deadman) is held — the human is overriding the policy."""
+        return self._listener is not None and self._listener.should_intervene()
+
+    def sync_to(self, action: dict) -> None:
+        """Latch the relative accumulator (and gripper) onto a policy action.
+
+        Call this every step the POLICY is driving (R1 not held). It keeps the
+        teleop's relative target shadowing the policy's, so the instant the
+        operator grabs R1 the very next get_action() continues from where the
+        policy left the arm — a bumpless handoff with no jump. `action` is a
+        relative-to-home dict {x.pos, y.pos, z.pos, yaw.pos, gripper.pos}.
+        """
+        self._rel = np.array(
+            [action["x.pos"], action["y.pos"], action["z.pos"]], dtype=np.float32
+        )
+        self._rel_yaw = float(action.get("yaw.pos", 0.0))
+        if self._listener is not None and self.config.use_gripper:
+            self._listener.gripper_open = float(action.get("gripper.pos", 1.0)) >= 0.5

@@ -96,7 +96,9 @@ USE_TTS = False   # no speaker on this PC -> rely on the on-screen banners below
 # record_loop's display_data logs Rerun EVERY frame (no throttle) -> can drop the loop
 # rate. Default OFF for fast/full-rate recording; review later with
 # inspect_ur10_follower_dataset.py --rerun. Set True if you want live cropped images.
-USE_RERUN = True
+# (Was the prime cause of dropped frames at 30 Hz with 3 cameras — keep OFF to record
+# at full rate; review images afterwards with inspect_ur10_follower_dataset.py --rerun.)
+USE_RERUN = False
 # -------------------------------------------------------------------------------
 
 
