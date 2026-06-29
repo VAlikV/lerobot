@@ -440,18 +440,20 @@ class UR10Robot:
         except Exception:
             logger.exception("stop_streaming failed during disconnect")
 
-        # 2. Tear down the control script. We deliberately do NOT call servoStop here.
-        # On this firmware servoStop WEDGES (it polls for an ack the script may never send)
-        # even on a LIVE, running script — blocking disconnect for the full 12s deadline and
-        # leaving the process unresponsive to Ctrl+C (observed: had to stop the script from
-        # the pendant, which then produced "RTDE control script is not running!"). The
-        # streaming thread is already stopped (step 1), so the arm is holding its last servoL
-        # setpoint and not moving; stopScript ends the script — and servo mode with it —
-        # cleanly, with no servoStop needed. stopScript stays deadline-guarded as a backstop.
+        # 2. Tear down the control interface by closing its SOCKET — NOT servoStop/stopScript.
+        # On this firmware BOTH of those WEDGE at teardown: they block waiting for an ack from
+        # the URScript, which is stuck in its servoL hold loop and won't process the command
+        # (a 5-12s deadline hang that even eats Ctrl+C; observed servoStop @12s, then
+        # stopScript @5s). disconnect() is a plain socket close that does NOT wait on the
+        # script, so it cannot wedge; the controller's RTDE watchdog then terminates the
+        # script on connection loss. This is exactly the action _ctrl_call_with_deadline uses
+        # to break a wedge. The streaming thread is already stopped (step 1), so the arm holds
+        # its last servoL setpoint and doesn't move.
         if self.rtde_ctrl is not None:
-            self._ctrl_call_with_deadline(
-                "stopScript", lambda: self.rtde_ctrl.stopScript(), deadline_s=5.0,
-            )
+            try:
+                self.rtde_ctrl.disconnect()
+            except Exception:
+                logger.exception("rtde_ctrl.disconnect failed (continuing teardown)")
 
         # 3. Close the receive / IO handles, gripper, cameras.
         if self.rtde_rec is not None:
@@ -815,7 +817,7 @@ class UR10Robot:
         target from the current pose to `pose` at ~`speed` so the arm glides home under the
         live controller. Same approach as `auto_reset_to_home`, now also inside
         `UR10RobotEnv.reset()`. servoStop is no longer called on any live path — disconnect()
-        tears down with stopScript only (servoStop wedges even on a live script).
+        tears down by closing the control socket (both servoStop and stopScript wedge here).
         """
         pose = np.asarray(pose, dtype=float).reshape(6)
         streaming = (
