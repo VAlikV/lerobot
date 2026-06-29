@@ -799,50 +799,74 @@ class UR10Robot:
         speed: float,
         acceleration: float,
     ) -> None:
-        """Blocking moveL — used only by reset() to drive precisely to the home pose.
+        """Blocking reset move to an absolute pose by RAMPING the streamed servoL target.
 
-        Pauses the streaming thread, executes moveL under `_ctrl_lock`, updates the shared
-        target to the new pose so the resumed thread tracks home immediately without
-        snapping back to the old target, then resumes streaming.
+        Crucially this does NOT use moveL or servoStop while streaming. On this firmware
+        servoStop wedges (it polls an ack the control script may never return), and moveL
+        needs servoStop to leave servo mode — so the old pause->servoStop->moveL reset path
+        hits the wedge whenever the arm has to travel (end-of-episode -> home). When the
+        wedge recovery then tries to reconnect it can fail outright if a fieldbus
+        (EtherNet/IP / PROFINET / MODBUS) occupies a register bank (no free bank), and the
+        whole episode / dataset is lost. The streaming reset sidesteps the wedge site
+        entirely: the stream thread keeps servoL-ing; we feed it a finely interpolated
+        target from the current pose to `pose` at ~`speed` so the arm glides home under the
+        live controller. Same approach as `auto_reset_to_home`, now also inside
+        `UR10RobotEnv.reset()`. servoStop survives only at disconnect() (deadline-guarded).
         """
-        streaming = self._stream_thread is not None and self._stream_thread.is_alive()
+        pose = np.asarray(pose, dtype=float).reshape(6)
+        streaming = (
+            self._stream_thread is not None
+            and self._stream_thread.is_alive()
+            and not self._stream_failed.is_set()
+        )
 
-        # If the arm is already within tolerance of the target and streaming is
-        # live, skip the pause/servoStop/moveL cycle and let servoL absorb the
-        # residual. servoStop is this controller's known wedge site — every
-        # crossing we avoid is a wedge we can't hit. This makes the record/eval
-        # flow wedge-free between episodes: auto_reset_to_home has already parked
-        # the arm at home, so env.reset()'s moveL is a no-op motion-wise (the
-        # tolerances comfortably cover yaw randomisation of a few millirad; with
-        # cm-scale xy/z randomisation the pose differs and moveL runs as before).
-        if streaming and not self._stream_failed.is_set():
-            cur = self.get_current_tcp()
-            pos_err = float(np.linalg.norm(np.asarray(pose[:3]) - np.asarray(cur[:3])))
-            rot_err = float(np.linalg.norm(
-                (Rotation.from_rotvec(pose[3:6]).inv() * Rotation.from_rotvec(cur[3:6])).as_rotvec()
-            ))
-            if pos_err < 2e-3 and rot_err < 0.02:
-                with self._target_lock:
-                    self._target = list(pose)
-                logger.info(
-                    "move_to_pose: already at target (%.2f mm, %.4f rad off) — "
-                    "letting servoL converge, skipping servoStop/moveL",
-                    pos_err * 1e3, rot_err,
-                )
-                return
-
-        if streaming:
-            self._pause_streaming()
-        try:
+        if not streaming:
+            # Stream not running (not started / already failed). A plain blocking moveL is
+            # safe here — we are not in servo mode, so no servoStop is needed.
             with self._ctrl_lock:
-                self.rtde_ctrl.moveL(
-                    list(pose), float(speed), float(acceleration), False
-                )
+                self.rtde_ctrl.moveL(list(pose), float(speed), float(acceleration), False)
             with self._target_lock:
                 self._target = list(pose)
-        finally:
-            if streaming:
-                self._resume_streaming()
+            return
+
+        cur = np.asarray(self.get_current_tcp(), dtype=float)
+        R0 = Rotation.from_rotvec(cur[3:6])
+        d_rot = (R0.inv() * Rotation.from_rotvec(pose[3:6])).as_rotvec()  # tool-frame delta
+        pos_err = float(np.linalg.norm(pose[:3] - cur[:3]))
+        rot_err = float(np.linalg.norm(d_rot))
+
+        # Already within tolerance -> latch the exact target and let servoL hold it.
+        if pos_err < 2e-3 and rot_err < 0.02:
+            with self._target_lock:
+                self._target = list(pose)
+            logger.info(
+                "move_to_pose: already at target (%.2f mm, %.4f rad off) — "
+                "letting servoL converge, skipping servoStop/moveL",
+                pos_err * 1e3, rot_err,
+            )
+            return
+
+        # Duration so translation stays ~speed and rotation ~0.6 rad/s, with a floor.
+        duration = max(pos_err / max(float(speed), 1e-3), rot_err / 0.6, 0.3)
+        steps = max(1, int(round(duration / self._stream_dt)))
+        logger.info(
+            "move_to_pose: streaming reset %.1f mm / %.3f rad over %.2fs (%d steps) — "
+            "no servoStop/moveL", pos_err * 1e3, rot_err, duration, steps,
+        )
+        for i in range(1, steps + 1):
+            if self._stream_failed.is_set() or self._stop_event.is_set():
+                break
+            t = i / steps
+            p = cur[:3] + t * (pose[:3] - cur[:3])
+            r = (R0 * Rotation.from_rotvec(t * d_rot)).as_rotvec()
+            with self._target_lock:
+                self._target = [
+                    float(p[0]), float(p[1]), float(p[2]),
+                    float(r[0]), float(r[1]), float(r[2]),
+                ]
+            time.sleep(self._stream_dt)
+        with self._target_lock:
+            self._target = list(pose)
 
     def send_gripper(self, command: int) -> None:
         """Send a discrete gripper command (matches RC10 encoding for dataset parity).
