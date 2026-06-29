@@ -440,12 +440,15 @@ class UR10Robot:
         except Exception:
             logger.exception("stop_streaming failed during disconnect")
 
-        # 2. Tear down the control script cleanly. Both calls are watchdogged so a
-        # wedged URScript or stale RTDE socket can't pin the process forever.
+        # 2. Tear down the control script. We deliberately do NOT call servoStop here.
+        # On this firmware servoStop WEDGES (it polls for an ack the script may never send)
+        # even on a LIVE, running script — blocking disconnect for the full 12s deadline and
+        # leaving the process unresponsive to Ctrl+C (observed: had to stop the script from
+        # the pendant, which then produced "RTDE control script is not running!"). The
+        # streaming thread is already stopped (step 1), so the arm is holding its last servoL
+        # setpoint and not moving; stopScript ends the script — and servo mode with it —
+        # cleanly, with no servoStop needed. stopScript stays deadline-guarded as a backstop.
         if self.rtde_ctrl is not None:
-            self._ctrl_call_with_deadline(
-                "servoStop", lambda: self.rtde_ctrl.servoStop(10.0), deadline_s=12.0,
-            )
             self._ctrl_call_with_deadline(
                 "stopScript", lambda: self.rtde_ctrl.stopScript(), deadline_s=5.0,
             )
@@ -811,7 +814,8 @@ class UR10Robot:
         entirely: the stream thread keeps servoL-ing; we feed it a finely interpolated
         target from the current pose to `pose` at ~`speed` so the arm glides home under the
         live controller. Same approach as `auto_reset_to_home`, now also inside
-        `UR10RobotEnv.reset()`. servoStop survives only at disconnect() (deadline-guarded).
+        `UR10RobotEnv.reset()`. servoStop is no longer called on any live path — disconnect()
+        tears down with stopScript only (servoStop wedges even on a live script).
         """
         pose = np.asarray(pose, dtype=float).reshape(6)
         streaming = (
