@@ -96,6 +96,14 @@ class UR10RobotConfig(RobotConfig):
 
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
 
+    # Observation composition. True -> state includes the 6 joint velocities:
+    #   [joint_pos(6), joint_vel(6), tcp_xyz_rel(3), (yaw,) gripper]  = 16-D (17-D with yaw).
+    # False -> drop joint_vel:
+    #   [joint_pos(6), tcp_xyz_rel(3), (yaw,) gripper]                = 10-D (11-D with yaw).
+    # Set False to match the 11-D standalone-ACT layout. MUST agree with the policy's
+    # state_encoder input dim (i.e. the JSON dataset_stats / input_features shape).
+    include_joint_velocities: bool = True
+
 
 @dataclass
 class UR10RobotEnvConfig:
@@ -603,7 +611,6 @@ class UR10Robot:
         canonical 16-D layout.
         """
         joint_pos = self.get_joint_positions()
-        joint_vel = self.get_joint_velocities()
         tcp = self.get_current_tcp()
         gripper_state = float(self.gripper.is_open)
 
@@ -612,12 +619,14 @@ class UR10Robot:
         if self._initial_tcp_xyz is not None:
             tcp_xyz = tcp_xyz - self._initial_tcp_xyz
 
-        agent_pos = np.concatenate([
-            joint_pos,         # 6
-            joint_vel,         # 6
-            tcp_xyz,           # 3 (relative to initial_tcp_xyz when baseline is set)
-            [gripper_state],   # 1
-        ]).astype(np.float32)  # total: 16
+        # joint_vel(6) is optional (config.include_joint_velocities). Gripper stays LAST so
+        # `observation.state[-1]` indexing (SAC discrete dim, gripper-penalty) is preserved.
+        parts = [joint_pos]                                  # 6
+        if self.config.include_joint_velocities:
+            parts.append(self.get_joint_velocities())        # 6 (skipped when disabled)
+        parts.append(tcp_xyz)                                # 3 (relative when baseline set)
+        parts.append(np.asarray([gripper_state], dtype=np.float32))  # 1
+        agent_pos = np.concatenate(parts).astype(np.float32)  # 16/17 with vel, 10/11 without
 
         pixels = {name: cam.async_read() for name, cam in self.cameras.items()}
         return {"agent_pos": agent_pos, "pixels": pixels}
