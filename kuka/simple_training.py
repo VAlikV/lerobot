@@ -11,7 +11,22 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
-PATH = "outputs/test/act"
+PATH = "outputs/device_assemble/act_stage3"
+DATASET_ID = "local/kuka_device_assemble_stage3"
+
+# Set this to an already trained checkpoint directory to continue training it.
+# PRETRAINED_PATH: str | None = "outputs/device_assemble/act_stage1_finetune/20000"
+PRETRAINED_PATH: str | None = None
+
+# True: build normalization from the finetune dataset stats.
+# False: reuse pre/post processors saved in PRETRAINED_PATH.
+USE_FINETUNE_DATASET_STATS = False
+
+DEVICE = "cuda"  # or "cpu"
+BATCH_SIZE = 32
+TRAINING_STEPS = 70000
+LOG_FREQ = 100
+SAVE_FREQ = 5000
 
 
 def make_delta_timestamps(delta_indices: list[int] | None, fps: int) -> list[float]:
@@ -26,20 +41,34 @@ def main():
     output_directory.mkdir(parents=True, exist_ok=True)
 
     # Select your device
-    device = torch.device("cuda")  # or "cuda" or "cpu"
-
-    dataset_id = "local/ACT_KUKA_50eps"
+    device = torch.device(DEVICE)
 
     # This specifies the inputs the model will be expecting and the outputs it will produce
-    dataset_metadata = LeRobotDatasetMetadata(dataset_id)
+    dataset_metadata = LeRobotDatasetMetadata(DATASET_ID)
     features = dataset_to_policy_features(dataset_metadata.features)
 
     output_features = {key: ft for key, ft in features.items() if ft.type is FeatureType.ACTION}
     input_features = {key: ft for key, ft in features.items() if key not in output_features}
 
-    cfg = ACTConfig(input_features=input_features, output_features=output_features)
-    policy = ACTPolicy(cfg)
-    preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
+    if PRETRAINED_PATH is not None:
+        print(f"Finetune from checkpoint: {PRETRAINED_PATH}")
+        policy = ACTPolicy.from_pretrained(PRETRAINED_PATH)
+        cfg = policy.config
+        cfg.device = str(device)
+
+        if USE_FINETUNE_DATASET_STATS:
+            preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
+        else:
+            preprocessor, postprocessor = make_pre_post_processors(
+                cfg,
+                pretrained_path=PRETRAINED_PATH,
+                dataset_stats=dataset_metadata.stats,
+            )
+    else:
+        print("Train from scratch")
+        cfg = ACTConfig(input_features=input_features, output_features=output_features, device=str(device))
+        policy = ACTPolicy(cfg)
+        preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
 
     policy.train()
     policy.to(device)
@@ -56,24 +85,21 @@ def main():
     }
 
     # Instantiate the dataset
-    dataset = LeRobotDataset(dataset_id, delta_timestamps=delta_timestamps)
-    # dataset = LeRobotDataset(dataset_id)
+    dataset = LeRobotDataset(DATASET_ID, delta_timestamps=delta_timestamps)
+    # dataset = LeRobotDataset(DATASET_ID)
     print(len(dataset))
 
     # Create the optimizer and dataloader for offline training
     optimizer = cfg.get_optimizer_preset().build(policy.parameters())
-    batch_size = 32
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=batch_size,
+        batch_size=BATCH_SIZE,
         shuffle=True,
         pin_memory=device.type != "cpu",
         drop_last=True,
     )
 
     # Number of training steps and logging frequency
-    training_steps = 50000
-    log_freq = 100
 
     # Run training loop
     step = 0
@@ -86,18 +112,18 @@ def main():
             optimizer.step()
             optimizer.zero_grad()
 
-            if step % log_freq == 0:
+            if step % LOG_FREQ == 0:
                 print(f"step: {step} loss: {loss.item():.3f}")
             step += 1
 
-            if step % 10000 == 0:
-                output_directory = Path(PATH + "/"+str(step))
+            if step % SAVE_FREQ == 0:
+                output_directory = Path(PATH) / str(step)
                 output_directory.mkdir(parents=True, exist_ok=True)
                 policy.save_pretrained(output_directory)
                 preprocessor.save_pretrained(output_directory)
                 postprocessor.save_pretrained(output_directory)
 
-            if step >= training_steps:
+            if step >= TRAINING_STEPS:
                 done = True
                 break
 
