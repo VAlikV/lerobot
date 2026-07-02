@@ -1,7 +1,7 @@
 {
     "env": {
         "name": "kuka_iiwa",
-        "task": "kuka_cube",
+        "task": "kuka_device_assemble",
         "fps": 30,
 
         "robot": {
@@ -11,24 +11,35 @@
             "gripper_port": "/dev/ttyACM0",
             "gripper_baudrate": 115200,
             "resolution": [224, 224],
-            "reset_pose": [0.638, 0.0, 0.245, 3.1415, 0.0, 3.1415, 1.0],
-            "reset_time_s": 15.0,
+            "reset_pose": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
+            "reset_time_s": 25.0,
             "reset_fps": 30,
             "control_hz": 100,
+            "camera_timeout_ms": 3000,
             "cameras": {
                 "front": {
                     "type": "opencv",
                     "index_or_path": 2,
                     "width": 640,
                     "height": 480,
-                    "fps": 30
+                    "fps": 30,
+                    "warmup_s": 3
                 },
                 "side": {
                     "type": "opencv",
                     "index_or_path": 4,
                     "width": 640,
                     "height": 480,
-                    "fps": 30
+                    "fps": 30,
+                    "warmup_s": 3
+                },
+                "gripper": {
+                    "type": "opencv",
+                    "index_or_path": 6,
+                    "width": 640,
+                    "height": 480,
+                    "fps": 30,
+                    "warmup_s": 3
                 }
             }
         },
@@ -50,8 +61,8 @@
                 "gripper_penalty": -0.02
             },
             "reset": {
-                "fixed_reset_joint_positions": [0.638, 0.0, 0.245, 3.1415, 0.0, 3.1415, 1.0],
-                "reset_time_s": 15.0,
+                "fixed_reset_joint_positions": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
+                "reset_time_s": 25.0,
                 "control_time_s": 60.0,
                 "terminate_on_success": true,
                 "randomization_xy": 0.02,
@@ -73,7 +84,7 @@
                     "yaw": 0.005
                 },
                 "end_effector_bounds": {
-                    "min": [0.35, -0.25, 0.2, -0.35],
+                    "min": [0.35, -0.35, 0.10, -0.35],
                     "max": [0.8, 0.25, 0.55, 0.35]
                 }
             }
@@ -81,8 +92,8 @@
     },
 
     "dataset": {
-        "repo_id": "local/test",
-        "task": "kuka_cube",
+        "repo_id": "local/kuka_device_assemble_part1_3",
+        "task": "kuka_pcb_insertion",
         "num_episodes_to_record": 30,
         "action_recording_mode": "absolute",
         "push_to_hub": false

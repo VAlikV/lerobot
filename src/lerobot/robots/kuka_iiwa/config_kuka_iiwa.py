@@ -16,6 +16,7 @@ class KukaIiwaConfig(RobotConfig):
 
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     resolution: tuple = (224, 224)
+    camera_timeout_ms: int = 5000
 
     # limits: tuple = ((-0.1, 0.1), (-0.1, 0.1), (0.03, 0.1))
 

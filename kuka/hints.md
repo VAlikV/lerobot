@@ -15,5 +15,5 @@ By `simple_using_example.py`
 ## Concatenate 
 
 ```bash
-lerobot-edit-dataset   --new_repo_id local/kuka_iiwa_2cams_abs_packing   --operation.type merge   --operation.repo_ids "['local/kuka_iiwa_2cams_abs_packing_park1', 'local/kuka_iiwa_2cams_abs_packing_park2']"
+lerobot-edit-dataset   --new_repo_id local/kuka_device_assemble_stage3   --operation.type merge   --operation.repo_ids "['local/kuka_device_assemble_stage3_part1', 'local/kuka_device_assemble_stage3_part2', 'local/kuka_device_assemble_stage3_part3']"
 ```

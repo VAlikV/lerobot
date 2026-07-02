@@ -18,14 +18,14 @@
             "cameras": {
                 "front": {
                     "type": "opencv",
-                    "index_or_path": 2,
+                    "index_or_path": 3,
                     "width": 640,
                     "height": 480,
                     "fps": 30
                 },
                 "side": {
                     "type": "opencv",
-                    "index_or_path": 4,
+                    "index_or_path": 2,
                     "width": 640,
                     "height": 480,
                     "fps": 30
@@ -51,7 +51,7 @@
             },
             "reset": {
                 "fixed_reset_joint_positions": [0.638, 0.0, 0.245, 3.1415, 0.0, 3.1415, 1.0],
-                "reset_time_s": 15.0,
+                "reset_time_s": 30.0,
                 "control_time_s": 60.0,
                 "terminate_on_success": true,
                 "randomization_xy": 0.02,
@@ -81,8 +81,8 @@
     },
 
     "dataset": {
-        "repo_id": "local/test",
-        "task": "kuka_cube",
+        "repo_id": "local/kuka_pcb_insertion_part2",
+        "task": "kuka_pcb_insertion",
         "num_episodes_to_record": 30,
         "action_recording_mode": "absolute",
         "push_to_hub": false

@@ -64,6 +64,9 @@ class KukaIiwa(Robot):
             "roll.pos": float,
             "pitch.pos": float,
             "yaw.pos": float,
+            "force.x": float,
+            "force.y": float,
+            "force.z": float,
             "gripper.pos": float,
         }
         for cam_name in self.cameras:
@@ -138,7 +141,7 @@ class KukaIiwa(Robot):
 
         obs = self._get_pose_observation()
         for cam_name, cam in self.cameras.items():
-            image = cam.async_read()
+            image = cam.async_read(timeout_ms=self.config.camera_timeout_ms)
             image = cv2.resize(image, self.config.resolution)
             obs[cam_name] = image
         return obs
@@ -196,6 +199,7 @@ class KukaIiwa(Robot):
             raw_obs[16:19],
         ])
         rpy = Rotation.from_matrix(rot_matrix).as_euler("xyz", degrees=False)
+
         return {
             "x.pos": float(raw_obs[7]),
             "y.pos": float(raw_obs[8]),
@@ -203,6 +207,9 @@ class KukaIiwa(Robot):
             "roll.pos": float(rpy[0]),
             "pitch.pos": float(rpy[1]),
             "yaw.pos": float(rpy[2]),
+            "force.x": float(raw_obs[22]),
+            "force.y": float(raw_obs[23]),
+            "force.z": float(raw_obs[24]),
             "gripper.pos": float(gripper_pos),
         }
 
@@ -401,6 +408,9 @@ class KukaIiwaRobotEnv(gym.Env):
                 obs["roll.pos"],
                 obs["pitch.pos"],
                 obs["yaw.pos"],
+                obs["force.x"],
+                obs["force.y"],
+                obs["force.z"],
                 obs["gripper.pos"],
             ],
             dtype=np.float32,

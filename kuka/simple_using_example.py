@@ -25,13 +25,13 @@ from lerobot.rl.gym_manipulator import GymManipulatorConfig
 from lerobot.utils.robot_utils import precise_sleep
 
 
-CONFIG_PATH = "kuka/configs/kuka_redpag_record.json"
-MODEL_ID = "outputs/test/act/40000"
-DATASET_ID = "local/kuka_iiwa_3cams_abs_redpag"
+CONFIG_PATH = "kuka/configs/kuka_device_assemble.json"
+MODEL_ID = "outputs/device_assemble/act_part1/40000"
+DATASET_ID = "local/kuka_device_assemble_stage1"
 DEVICE = "cuda"
 
 MAX_EPISODES = 5
-MAX_STEPS_PER_EPISODE = 1000
+MAX_STEPS_PER_EPISODE = 10000
 
 
 def _make_kuka_env(cfg: GymManipulatorConfig) -> KukaIiwaRobotEnv:

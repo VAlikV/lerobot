@@ -1,0 +1,440 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+
+import draccus
+import numpy as np
+import torch
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.policies.act.modeling_act import ACTPolicy
+from lerobot.policies.factory import make_pre_post_processors
+from lerobot.policies.utils import make_robot_action
+from lerobot.processor import TransitionKey
+from lerobot.processor.converters import create_transition
+from lerobot.rl.gym_manipulator import GymManipulatorConfig, make_processors, make_robot_env
+from lerobot.teleoperators.utils import TeleopEvents
+from lerobot.utils.constants import ACTION, DONE, OBS_STATE, REWARD
+from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.utils import log_say
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+# -- user-tunable -------------------------------------------------------------
+CONFIG_PATH = "kuka/configs/kuka_device_assemble.json"
+
+# Set POLICY_DIR to None for pure human recording. When set, the policy drives
+# the robot until the gamepad intervention button is held.
+POLICY_DIR: str | None = None
+POLICY_DATASET_REPO_ID: str | None = None
+
+POLICY_DIR: str | None = "outputs/device_assemble/act_stage1_comp/100000"
+POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble_stage1_comp"
+POLICY_DEVICE = "cuda"
+
+REPO_ID = "local/kuka_test_2"
+# REPO_ID = "local/kuka_device_assemble_stage1_finetune"
+TASK_DESCRIPTION = "kuka_assemble"
+NUM_EPISODES = 20
+EPISODE_TIME_S = 60
+FPS = 30
+
+N_ACTION_STEPS = 30
+
+USE_TTS = True
+# ----------------------------------------------------------------------ж------
+
+
+def _build_dataset_features(env, transition: dict, *, use_gripper: bool) -> dict:
+    features = {
+        ACTION: env.get_recording_action_features("absolute"),
+        REWARD: {"dtype": "float32", "shape": (1,), "names": None},
+        DONE: {"dtype": "bool", "shape": (1,), "names": None},
+    }
+    if use_gripper:
+        features["complementary_info.discrete_penalty"] = {
+            "dtype": "float32",
+            "shape": (1,),
+            "names": ["discrete_penalty"],
+        }
+
+    for key, value in transition[TransitionKey.OBSERVATION].items():
+        if key == OBS_STATE and isinstance(value, torch.Tensor):
+            features[key] = {
+                "dtype": "float32",
+                "shape": tuple(value.squeeze(0).shape),
+                "names": None,
+            }
+        elif "image" in key and isinstance(value, torch.Tensor):
+            features[key] = {
+                "dtype": "video",
+                "shape": tuple(value.squeeze(0).shape),
+                "names": ["channels", "height", "width"],
+            }
+    return features
+
+
+def _neutral_delta_action(env, *, use_gripper: bool) -> torch.Tensor:
+    action = torch.zeros(int(env.action_space.shape[0]), dtype=torch.float32)
+    if use_gripper:
+        action[-1] = 1.0
+    return action
+
+
+def _teleop_action_to_delta_tensor(
+    teleop_action: dict,
+    *,
+    use_yaw: bool,
+    use_gripper: bool,
+) -> torch.Tensor:
+    action = [
+        teleop_action.get("delta_x", 0.0),
+        teleop_action.get("delta_y", 0.0),
+        teleop_action.get("delta_z", 0.0),
+    ]
+    if use_yaw:
+        action.append(teleop_action.get("delta_yaw", 0.0))
+    if use_gripper:
+        action.append(teleop_action.get("gripper", 1.0))
+    return torch.tensor(action, dtype=torch.float32)
+
+
+def _initial_gripper_cmd(env) -> int:
+    gripper_pos = float(env.robot._get_pose_observation()["gripper.pos"])
+    return 1 if gripper_pos > 0 else 0
+
+
+def _absolute_gripper_to_binary_cmd(gripper_pos: float) -> int:
+    return 1 if float(gripper_pos) > 0 else 0
+
+
+def _apply_binary_gripper_latch(action, latched_cmd: int) -> int:
+    gripper_cmd = int(round(float(action[-1])))
+    if gripper_cmd == 0:
+        latched_cmd = 0
+    elif gripper_cmd == 2:
+        latched_cmd = 1
+    action[-1] = float(latched_cmd)
+    return latched_cmd
+
+
+def _binary_gripper_to_env_command(action) -> None:
+    if int(round(float(action[-1]))) == 1:
+        action[-1] = 2.0
+
+
+def _complete_absolute_action(env, action: dict[str, float]) -> dict[str, float]:
+    pose = env.robot._get_pose_observation()
+    completed = {
+        "x.pos": float(action.get("x.pos", pose["x.pos"])),
+        "y.pos": float(action.get("y.pos", pose["y.pos"])),
+        "z.pos": float(action.get("z.pos", pose["z.pos"])),
+        "roll.pos": float(env.config.fixed_roll),
+        "pitch.pos": float(env.config.fixed_pitch),
+        "yaw.pos": float(action.get("yaw.pos", env.config.fixed_yaw)),
+        "gripper.pos": float(action.get("gripper.pos", pose["gripper.pos"])),
+    }
+
+    xyz = np.array([completed["x.pos"], completed["y.pos"], completed["z.pos"]], dtype=np.float32)
+    xyz = np.clip(xyz, env.ee_min, env.ee_max)
+    completed["x.pos"] = float(xyz[0])
+    completed["y.pos"] = float(xyz[1])
+    completed["z.pos"] = float(xyz[2])
+
+    if env.use_yaw:
+        yaw_offset = float(np.clip(completed["yaw.pos"] - env.config.fixed_yaw, env.yaw_min, env.yaw_max))
+        completed["yaw.pos"] = float(env.config.fixed_yaw + yaw_offset)
+
+    return completed
+
+
+def _apply_absolute_action(env, action: dict[str, float]) -> None:
+    action = _complete_absolute_action(env, action)
+    env.robot.send_action(action)
+
+    env.target_xyz = np.array([action["x.pos"], action["y.pos"], action["z.pos"]], dtype=np.float32)
+    if env.use_yaw:
+        env.target_yaw = float(action["yaw.pos"] - env.config.fixed_yaw)
+    else:
+        env.target_yaw = float(action["yaw.pos"])
+
+
+def _processed_observation(env, env_processor, obs, info: dict) -> dict:
+    transition = create_transition(observation=obs, info=info)
+    return env_processor(transition)
+
+
+def _assert_pending_episode_indices(dataset: LeRobotDataset, pending_episode_buffers: list[dict]) -> None:
+    for expected_idx, episode_buffer in enumerate(pending_episode_buffers):
+        actual_idx = int(episode_buffer["episode_index"])
+        if actual_idx != expected_idx:
+            raise RuntimeError(
+                "Pending episode buffer indices are inconsistent: "
+                f"buffer {expected_idx} has episode_index={actual_idx}. "
+                "This usually means the script was run before the rerecord buffer-index fix; "
+                "discard this recording run and record again."
+            )
+
+
+def _load_policy(policy_dir: str, dataset_repo_id: str, requested_device: str):
+    metadata = LeRobotDatasetMetadata(dataset_repo_id)
+    policy = ACTPolicy.from_pretrained(policy_dir)
+    policy.config.n_action_steps = N_ACTION_STEPS
+    device = torch.device(requested_device if torch.cuda.is_available() or requested_device == "cpu" else "cpu")
+    policy.to(device)
+    policy.eval()
+    preprocess, postprocess = make_pre_post_processors(
+        policy.config,
+        pretrained_path=policy_dir,
+        dataset_stats=metadata.stats,
+    )
+    logger.info("Policy loaded from %s on %s", policy_dir, device)
+    return metadata, policy, preprocess, postprocess, device
+
+
+def main() -> None:
+    with open(CONFIG_PATH) as f:
+        raw_cfg = json.load(f)
+    cfg = draccus.decode(GymManipulatorConfig, raw_cfg)
+    if cfg.env.fps != FPS:
+        raise ValueError(f"FPS constant ({FPS}) must match cfg.env.fps ({cfg.env.fps})")
+
+    policy_bundle = None
+    device = torch.device("cpu")
+    if POLICY_DIR is not None:
+        if POLICY_DATASET_REPO_ID is None:
+            raise ValueError("Set POLICY_DATASET_REPO_ID when POLICY_DIR is not None.")
+        policy_bundle = _load_policy(POLICY_DIR, POLICY_DATASET_REPO_ID, POLICY_DEVICE)
+        _metadata, _policy, _preprocess, _postprocess, device = policy_bundle
+
+    env, teleop_device = make_robot_env(cfg.env)
+    env_processor, action_processor = make_processors(env, teleop_device, cfg.env, str(device))
+
+    use_gripper = cfg.env.processor.gripper.use_gripper if cfg.env.processor.gripper is not None else True
+    ik_cfg = cfg.env.processor.inverse_kinematics
+    use_yaw = bool(getattr(ik_cfg, "use_yaw", False)) if ik_cfg else False
+    neutral_action = _neutral_delta_action(env, use_gripper=use_gripper)
+    dt_s = 1.0 / float(FPS)
+    max_episode_steps = int(EPISODE_TIME_S * FPS)
+
+    obs, info = env.reset()
+    env_processor.reset()
+    action_processor.reset()
+    transition = _processed_observation(env, env_processor, obs, info)
+
+    dataset = LeRobotDataset.create(
+        repo_id=REPO_ID,
+        fps=FPS,
+        root=cfg.dataset.root,
+        features=_build_dataset_features(env, transition, use_gripper=use_gripper),
+        robot_type="kuka_iiwa",
+        use_videos=True,
+        image_writer_threads=4,
+        image_writer_processes=0,
+    )
+
+    logger.info(
+        "Recording %d DAgger episodes at %d Hz into %s; policy=%s",
+        NUM_EPISODES,
+        FPS,
+        REPO_ID,
+        POLICY_DIR or "disabled",
+    )
+    logger.info("Hold the gamepad intervention button to override the policy.")
+    if USE_TTS:
+        log_say(f"Recording episode 1 of {NUM_EPISODES}")
+    if policy_bundle is not None:
+        _metadata, policy, _preprocess, _postprocess, _device = policy_bundle
+        policy.reset()
+
+    episode_idx = 0
+    episode_step = 0
+    intervention_steps = 0
+    episode_start = time.perf_counter()
+    pending_episode_buffers = []
+    gripper_cmd = _initial_gripper_cmd(env) if use_gripper else 1
+    policy_gripper_cmd = gripper_cmd
+    was_intervening = False
+
+    try:
+        while episode_idx < NUM_EPISODES:
+            step_start = time.perf_counter()
+
+            probe_transition = transition.copy()
+            probe_transition[TransitionKey.ACTION] = neutral_action
+            probe_transition[TransitionKey.OBSERVATION] = (
+                env.get_raw_joint_positions() if hasattr(env, "get_raw_joint_positions") else {}
+            )
+            action_probe = action_processor(probe_transition)
+            info = action_probe[TransitionKey.INFO]
+            is_intervention = bool(info.get(TeleopEvents.IS_INTERVENTION, False))
+            if policy_bundle is None:
+                is_intervention = True
+                info[TeleopEvents.IS_INTERVENTION] = True
+                action_probe[TransitionKey.ACTION] = _teleop_action_to_delta_tensor(
+                    teleop_device.get_action(),
+                    use_yaw=use_yaw,
+                    use_gripper=use_gripper,
+                )
+            if (
+                use_gripper
+                and policy_bundle is not None
+                and is_intervention
+            ):
+                gripper_cmd = policy_gripper_cmd
+                action_probe[TransitionKey.ACTION][-1] = float(gripper_cmd)
+                if not was_intervening:
+                    logger.info("Intervention started; synced gripper state with policy.")
+            elif use_gripper and (is_intervention or policy_bundle is None):
+                gripper_cmd = _apply_binary_gripper_latch(action_probe[TransitionKey.ACTION], gripper_cmd)
+            if (
+                policy_bundle is not None
+                and was_intervening
+                and not is_intervention
+            ):
+                _metadata, policy, _preprocess, _postprocess, _device = policy_bundle
+                policy.reset()
+                logger.info("Intervention ended; reset policy action chunk.")
+            done = bool(action_probe.get(TransitionKey.DONE, False))
+            reward = float(action_probe.get(TransitionKey.REWARD, 0.0))
+            discrete_penalty = float(
+                action_probe[TransitionKey.COMPLEMENTARY_DATA].get("discrete_penalty", 0.0)
+            )
+
+            if is_intervention or policy_bundle is None or done:
+                if is_intervention:
+                    intervention_steps += 1
+                if use_gripper:
+                    _binary_gripper_to_env_command(action_probe[TransitionKey.ACTION])
+                obs, env_reward, env_done, env_truncated, env_info = env.step(action_probe[TransitionKey.ACTION])
+                reward += float(env_reward)
+                done = done or bool(env_done)
+                truncated = bool(env_truncated)
+                info.update(env_info)
+            else:
+                _metadata, policy, preprocess, postprocess, _device = policy_bundle
+                policy_obs = {
+                    key: value
+                    for key, value in transition[TransitionKey.OBSERVATION].items()
+                    if key in policy.config.input_features
+                }
+                policy_obs = preprocess(policy_obs)
+                with torch.no_grad():
+                    action_tensor = policy.select_action(policy_obs)
+                action_tensor = postprocess(action_tensor)
+                robot_action = make_robot_action(action_tensor, _metadata.features)
+                if use_gripper and "gripper.pos" in robot_action:
+                    policy_gripper_cmd = _absolute_gripper_to_binary_cmd(robot_action["gripper.pos"])
+                _apply_absolute_action(env, robot_action)
+                obs = env._get_observation()
+                truncated = False
+
+            if episode_step + 1 >= max_episode_steps:
+                truncated = True
+
+            transition = _processed_observation(env, env_processor, obs, info)
+            truncated = truncated or bool(transition.get(TransitionKey.TRUNCATED, False))
+
+            frame = {
+                ACTION: torch.as_tensor(env.get_recording_action("absolute"), dtype=torch.float32),
+                REWARD: np.array([reward], dtype=np.float32),
+                DONE: np.array([done or truncated], dtype=bool),
+                "task": TASK_DESCRIPTION,
+            }
+            if use_gripper:
+                frame["complementary_info.discrete_penalty"] = np.array(
+                    [discrete_penalty],
+                    dtype=np.float32,
+                )
+            for key, value in transition[TransitionKey.OBSERVATION].items():
+                if isinstance(value, torch.Tensor) and key in dataset.features:
+                    frame[key] = value.squeeze(0).detach().cpu()
+            dataset.add_frame(frame)
+
+            episode_step += 1
+
+            if done or truncated:
+                ep_time = time.perf_counter() - episode_start
+                rerecord = bool(info.get(TeleopEvents.RERECORD_EPISODE, False))
+                success = bool(info.get(TeleopEvents.SUCCESS, False))
+                if rerecord:
+                    logger.info("Re-recording episode %d after %.1fs", episode_idx + 1, ep_time)
+                    dataset.clear_episode_buffer()
+                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
+                    if USE_TTS:
+                        log_say(f"Re-recording episode {episode_idx + 1}")
+                else:
+                    logger.info(
+                        "Episode %d %s: %d steps, %.1fs, %d intervention steps",
+                        episode_idx + 1,
+                        "SUCCESS" if success else "DONE",
+                        episode_step,
+                        ep_time,
+                        intervention_steps,
+                    )
+                    pending_episode_buffers.append(dataset.episode_buffer)
+                    episode_idx += 1
+                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
+
+                if episode_idx >= NUM_EPISODES:
+                    break
+
+                obs, info = env.reset()
+                env_processor.reset()
+                action_processor.reset()
+                if policy_bundle is not None:
+                    _metadata, policy, _preprocess, _postprocess, _device = policy_bundle
+                    policy.reset()
+                transition = _processed_observation(env, env_processor, obs, info)
+                episode_step = 0
+                intervention_steps = 0
+                episode_start = time.perf_counter()
+                gripper_cmd = _initial_gripper_cmd(env) if use_gripper else 1
+                policy_gripper_cmd = gripper_cmd
+                was_intervening = False
+                if USE_TTS:
+                    log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
+
+            if not (done or truncated):
+                was_intervening = is_intervention
+            precise_sleep(max(dt_s - (time.perf_counter() - step_start), 0.0))
+
+    except KeyboardInterrupt:
+        logger.info("Recording stopped by user.")
+    except Exception:
+        logger.exception("Recording failed.")
+    finally:
+        try:
+            env.close()
+        except Exception:
+            logger.exception("env.close failed")
+        if teleop_device is not None:
+            try:
+                teleop_device.disconnect()
+            except Exception:
+                logger.exception("teleop disconnect failed")
+        try:
+            if pending_episode_buffers and USE_TTS:
+                log_say("Robot disconnected. Saving recorded episodes")
+            _assert_pending_episode_indices(dataset, pending_episode_buffers)
+            for idx, episode_buffer in enumerate(pending_episode_buffers, start=1):
+                logger.info(
+                    "Saving episode %d of %d after robot disconnect",
+                    idx,
+                    len(pending_episode_buffers),
+                )
+                if USE_TTS:
+                    log_say(f"Saving episode {idx} of {len(pending_episode_buffers)}")
+                dataset.save_episode(episode_data=episode_buffer)
+            dataset.finalize()
+            logger.info("Dataset finalized -> %s", REPO_ID)
+        except Exception:
+            logger.exception("dataset save/finalize failed")
+
+
+if __name__ == "__main__":
+    main()

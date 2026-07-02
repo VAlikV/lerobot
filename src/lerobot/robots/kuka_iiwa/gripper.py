@@ -23,19 +23,25 @@ class Gripper:
         if self._serial.is_open:
             self._serial.close()
 
+state = 1
+
 def main():
-    gripper = Gripper(device="/dev/ttyACM0")
+    gripper = Gripper(device="/dev/ttyACM1")
 
     print("Keyboard control: o - open, c - close, q/esc - quit")
 
     def on_press(key):
+        global state
         try:
-            if key.char == "o":
-                gripper.send(1)
-                print("Open")
-            elif key.char == "c":
-                gripper.send(0)
-                print("Close")
+            if key.char == "w":
+                if state == 0:
+                    gripper.send(1)
+                    print("Open")
+                    state = 1
+                elif state == 1:
+                    gripper.send(0)
+                    print("Close")
+                    state = 0
             elif key.char == "q":
                 return False
         except AttributeError:
