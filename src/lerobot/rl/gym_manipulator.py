@@ -455,6 +455,7 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             use_yaw=use_yaw,
             randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
             randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
+            randomization_yaw=reset_cfg.randomization_yaw if reset_cfg else 0.0,
         )
         env = KukaIiwaRobotEnv(robot, env_config)
 

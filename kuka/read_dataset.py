@@ -9,7 +9,7 @@ from lerobot.robots.assembling_sim import AssemblingSim, AssemblingSimCut, Assem
 
 import matplotlib.pyplot as plt
 
-dataset = LeRobotDataset("local/kuka_device_assemble_stage1")
+dataset = LeRobotDataset("local/kuka_test_1")
 actions = dataset.hf_dataset.select_columns("action")
 
 x = []

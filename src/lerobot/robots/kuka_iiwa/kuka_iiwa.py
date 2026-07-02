@@ -318,6 +318,7 @@ class KukaIiwaRobotEnvConfig:
     use_yaw: bool = False
     randomization_xy: float = 0.0
     randomization_z: float = 0.0
+    randomization_yaw: float = 0.0
 
 
 class KukaIiwaRobotEnv(gym.Env):
@@ -461,7 +462,14 @@ class KukaIiwaRobotEnv(gym.Env):
             home[2] += float(rng.uniform(-r, r))
 
         self.target_xyz = np.clip(np.array(home[:3], dtype=np.float32), self.ee_min, self.ee_max)
-        self.target_yaw = 0.0 if self.use_yaw else float(self.config.fixed_yaw)
+
+        target_yaw = 0.0 if self.use_yaw else float(self.config.fixed_yaw)
+        if self.config.randomization_yaw > 0:
+            r = self.config.randomization_yaw
+            target_yaw += float(rng.uniform(-r, r))
+            if self.use_yaw:
+                target_yaw = float(np.clip(target_yaw, self.yaw_min, self.yaw_max))
+        self.target_yaw = target_yaw
 
         reset_fps = max(1, int(self.config.reset_fps))
         dt_s = 1.0 / float(reset_fps)

@@ -12,7 +12,7 @@
             "gripper_baudrate": 115200,
             "resolution": [224, 224],
             "reset_pose": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
-            "reset_time_s": 25.0,
+            "reset_time_s": 15.0,
             "reset_fps": 30,
             "control_hz": 100,
             "camera_timeout_ms": 3000,
@@ -62,11 +62,12 @@
             },
             "reset": {
                 "fixed_reset_joint_positions": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
-                "reset_time_s": 25.0,
+                "reset_time_s": 15.0,
                 "control_time_s": 60.0,
                 "terminate_on_success": true,
                 "randomization_xy": 0.02,
-                "randomization_z": 0.01
+                "randomization_z": 0.01,
+                "randomization_yaw": 0.1
             },
             "observation": {
                 "display_cameras": true
@@ -78,9 +79,9 @@
             "inverse_kinematics": {
                 "use_yaw": true,
                 "end_effector_step_sizes": {
-                    "x": 0.002,
-                    "y": 0.002,
-                    "z": 0.002,
+                    "x": 0.0015,
+                    "y": 0.0015,
+                    "z": 0.0015,
                     "yaw": 0.005
                 },
                 "end_effector_bounds": {
@@ -95,7 +96,7 @@
         "repo_id": "local/kuka_device_assemble_part1_3",
         "task": "kuka_pcb_insertion",
         "num_episodes_to_record": 30,
-        "action_recording_mode": "absolute",
+        "action_recording_mode": "relative_to_start",
         "push_to_hub": false
     },
     "mode": "record",

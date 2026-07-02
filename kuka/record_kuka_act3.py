@@ -32,14 +32,14 @@ CONFIG_PATH = "kuka/configs/kuka_device_assemble.json"
 POLICY_DIR: str | None = None
 POLICY_DATASET_REPO_ID: str | None = None
 
-POLICY_DIR: str | None = "outputs/device_assemble/act_stage1_comp/100000"
-POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble_stage1_comp"
+# POLICY_DIR: str | None = "outputs/device_assemble/act_stage1_comp/100000"
+# POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble_stage1_comp"
 POLICY_DEVICE = "cuda"
 
-REPO_ID = "local/kuka_test_2"
-# REPO_ID = "local/kuka_device_assemble_stage1_finetune"
+# REPO_ID = "local/kuka_test_2"
+REPO_ID = "local/kuka_device_assemble2_stage1_part4"
 TASK_DESCRIPTION = "kuka_assemble"
-NUM_EPISODES = 20
+NUM_EPISODES = 10
 EPISODE_TIME_S = 60
 FPS = 30
 
@@ -49,9 +49,117 @@ USE_TTS = True
 # ----------------------------------------------------------------------ж------
 
 
-def _build_dataset_features(env, transition: dict, *, use_gripper: bool) -> dict:
+KUKA_RELATIVE_ACTION_NAMES = [
+    "x.rel",
+    "y.rel",
+    "z.rel",
+    "roll.rel",
+    "pitch.rel",
+    "yaw.rel",
+    "gripper.pos",
+]
+
+
+def _validate_dataset_coordinate_mode(mode: str) -> None:
+    if mode not in ("absolute", "relative_to_start"):
+        raise ValueError(
+            "`dataset.action_recording_mode` must be either 'absolute' or "
+            f"'relative_to_start'; got {mode!r}"
+        )
+
+
+def _recording_action_features(env, mode: str) -> dict:
+    if mode == "absolute":
+        return env.get_recording_action_features("absolute")
+    return {
+        "dtype": "float32",
+        "shape": (len(KUKA_RELATIVE_ACTION_NAMES),),
+        "names": KUKA_RELATIVE_ACTION_NAMES,
+    }
+
+
+def _angle_diff(angle: np.ndarray | float, origin: np.ndarray | float) -> np.ndarray | float:
+    return (np.asarray(angle) - np.asarray(origin) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _episode_origin_from_observation(obs: dict) -> np.ndarray:
+    origin = np.asarray(obs["agent_pos"], dtype=np.float32).copy()
+    if origin.shape[0] < 6:
+        raise ValueError(f"KUKA agent_pos must have at least 6 pose values; got shape {origin.shape}")
+    return origin
+
+
+def _make_relative_observation(obs: dict, episode_origin: np.ndarray, mode: str) -> dict:
+    if mode == "absolute":
+        return obs
+
+    relative_obs = dict(obs)
+    agent_pos = np.asarray(relative_obs["agent_pos"], dtype=np.float32).copy()
+    agent_pos[:3] -= episode_origin[:3]
+    agent_pos[3:6] = _angle_diff(agent_pos[3:6], episode_origin[3:6]).astype(np.float32)
+    relative_obs["agent_pos"] = agent_pos
+    return relative_obs
+
+
+def _make_relative_recording_action(action: np.ndarray, episode_origin: np.ndarray) -> np.ndarray:
+    relative_action = np.asarray(action, dtype=np.float32).copy()
+    relative_action[:3] -= episode_origin[:3]
+    relative_action[3:6] = _angle_diff(relative_action[3:6], episode_origin[3:6]).astype(np.float32)
+    return relative_action
+
+
+def _recording_action(env, mode: str, episode_origin: np.ndarray) -> np.ndarray:
+    action = env.get_recording_action("absolute")
+    if mode == "absolute":
+        return action
+    return _make_relative_recording_action(action, episode_origin)
+
+
+def _relative_policy_action_to_absolute(
+    action: dict[str, float],
+    episode_origin: np.ndarray,
+) -> dict[str, float]:
+    return {
+        "x.pos": float(episode_origin[0] + action.get("x.rel", action.get("x.pos", 0.0))),
+        "y.pos": float(episode_origin[1] + action.get("y.rel", action.get("y.pos", 0.0))),
+        "z.pos": float(episode_origin[2] + action.get("z.rel", action.get("z.pos", 0.0))),
+        "roll.pos": float(episode_origin[3] + action.get("roll.rel", action.get("roll.pos", 0.0))),
+        "pitch.pos": float(episode_origin[4] + action.get("pitch.rel", action.get("pitch.pos", 0.0))),
+        "yaw.pos": float(episode_origin[5] + action.get("yaw.rel", action.get("yaw.pos", 0.0))),
+        "gripper.pos": float(action.get("gripper.pos", episode_origin[-1])),
+    }
+
+
+def _validate_policy_action_names_for_mode(metadata: LeRobotDatasetMetadata, mode: str) -> None:
+    if mode != "relative_to_start":
+        return
+
+    action_names = list(metadata.features[ACTION]["names"] or [])
+    if action_names != KUKA_RELATIVE_ACTION_NAMES:
+        raise ValueError(
+            "Relative dataset mode expects a policy trained with relative action names "
+            f"{KUKA_RELATIVE_ACTION_NAMES}, but loaded policy dataset has {action_names}. "
+            "Use a policy trained on relative-to-start data or switch "
+            "`dataset.action_recording_mode` to 'absolute'."
+        )
+
+
+def _process_observation(
+    env,
+    env_processor,
+    obs,
+    info: dict,
+    *,
+    episode_origin: np.ndarray,
+    mode: str,
+) -> dict:
+    obs_for_dataset = _make_relative_observation(obs, episode_origin, mode)
+    return _processed_observation(env, env_processor, obs_for_dataset, info)
+
+
+def _build_dataset_features(env, transition: dict, *, use_gripper: bool, mode: str) -> dict:
     features = {
-        ACTION: env.get_recording_action_features("absolute"),
+        ACTION: _recording_action_features(env, mode),
         REWARD: {"dtype": "float32", "shape": (1,), "names": None},
         DONE: {"dtype": "bool", "shape": (1,), "names": None},
     }
@@ -200,6 +308,8 @@ def main() -> None:
     with open(CONFIG_PATH) as f:
         raw_cfg = json.load(f)
     cfg = draccus.decode(GymManipulatorConfig, raw_cfg)
+    action_recording_mode = cfg.dataset.action_recording_mode
+    _validate_dataset_coordinate_mode(action_recording_mode)
     if cfg.env.fps != FPS:
         raise ValueError(f"FPS constant ({FPS}) must match cfg.env.fps ({cfg.env.fps})")
 
@@ -210,6 +320,7 @@ def main() -> None:
             raise ValueError("Set POLICY_DATASET_REPO_ID when POLICY_DIR is not None.")
         policy_bundle = _load_policy(POLICY_DIR, POLICY_DATASET_REPO_ID, POLICY_DEVICE)
         _metadata, _policy, _preprocess, _postprocess, device = policy_bundle
+        _validate_policy_action_names_for_mode(_metadata, action_recording_mode)
 
     env, teleop_device = make_robot_env(cfg.env)
     env_processor, action_processor = make_processors(env, teleop_device, cfg.env, str(device))
@@ -222,15 +333,28 @@ def main() -> None:
     max_episode_steps = int(EPISODE_TIME_S * FPS)
 
     obs, info = env.reset()
+    episode_origin = _episode_origin_from_observation(obs)
     env_processor.reset()
     action_processor.reset()
-    transition = _processed_observation(env, env_processor, obs, info)
+    transition = _process_observation(
+        env,
+        env_processor,
+        obs,
+        info,
+        episode_origin=episode_origin,
+        mode=action_recording_mode,
+    )
 
     dataset = LeRobotDataset.create(
         repo_id=REPO_ID,
         fps=FPS,
         root=cfg.dataset.root,
-        features=_build_dataset_features(env, transition, use_gripper=use_gripper),
+        features=_build_dataset_features(
+            env,
+            transition,
+            use_gripper=use_gripper,
+            mode=action_recording_mode,
+        ),
         robot_type="kuka_iiwa",
         use_videos=True,
         image_writer_threads=4,
@@ -244,6 +368,7 @@ def main() -> None:
         REPO_ID,
         POLICY_DIR or "disabled",
     )
+    logger.info("Dataset action recording mode: %s", action_recording_mode)
     logger.info("Hold the gamepad intervention button to override the policy.")
     if USE_TTS:
         log_say(f"Recording episode 1 of {NUM_EPISODES}")
@@ -327,6 +452,8 @@ def main() -> None:
                     action_tensor = policy.select_action(policy_obs)
                 action_tensor = postprocess(action_tensor)
                 robot_action = make_robot_action(action_tensor, _metadata.features)
+                if action_recording_mode == "relative_to_start":
+                    robot_action = _relative_policy_action_to_absolute(robot_action, episode_origin)
                 if use_gripper and "gripper.pos" in robot_action:
                     policy_gripper_cmd = _absolute_gripper_to_binary_cmd(robot_action["gripper.pos"])
                 _apply_absolute_action(env, robot_action)
@@ -336,11 +463,21 @@ def main() -> None:
             if episode_step + 1 >= max_episode_steps:
                 truncated = True
 
-            transition = _processed_observation(env, env_processor, obs, info)
+            transition = _process_observation(
+                env,
+                env_processor,
+                obs,
+                info,
+                episode_origin=episode_origin,
+                mode=action_recording_mode,
+            )
             truncated = truncated or bool(transition.get(TransitionKey.TRUNCATED, False))
 
             frame = {
-                ACTION: torch.as_tensor(env.get_recording_action("absolute"), dtype=torch.float32),
+                ACTION: torch.as_tensor(
+                    _recording_action(env, action_recording_mode, episode_origin),
+                    dtype=torch.float32,
+                ),
                 REWARD: np.array([reward], dtype=np.float32),
                 DONE: np.array([done or truncated], dtype=bool),
                 "task": TASK_DESCRIPTION,
@@ -384,12 +521,20 @@ def main() -> None:
                     break
 
                 obs, info = env.reset()
+                episode_origin = _episode_origin_from_observation(obs)
                 env_processor.reset()
                 action_processor.reset()
                 if policy_bundle is not None:
                     _metadata, policy, _preprocess, _postprocess, _device = policy_bundle
                     policy.reset()
-                transition = _processed_observation(env, env_processor, obs, info)
+                transition = _process_observation(
+                    env,
+                    env_processor,
+                    obs,
+                    info,
+                    episode_origin=episode_origin,
+                    mode=action_recording_mode,
+                )
                 episode_step = 0
                 intervention_steps = 0
                 episode_start = time.perf_counter()

@@ -2,6 +2,7 @@ import json
 import time
 
 import draccus
+import numpy as np
 import torch
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
@@ -32,6 +33,16 @@ DEVICE = "cuda"
 
 MAX_EPISODES = 5
 MAX_STEPS_PER_EPISODE = 10000
+
+KUKA_RELATIVE_ACTION_NAMES = [
+    "x.rel",
+    "y.rel",
+    "z.rel",
+    "roll.rel",
+    "pitch.rel",
+    "yaw.rel",
+    "gripper.pos",
+]
 
 
 def _make_kuka_env(cfg: GymManipulatorConfig) -> KukaIiwaRobotEnv:
@@ -64,6 +75,7 @@ def _make_kuka_env(cfg: GymManipulatorConfig) -> KukaIiwaRobotEnv:
         use_yaw=use_yaw,
         randomization_xy=reset_cfg.randomization_xy if reset_cfg else 0.0,
         randomization_z=reset_cfg.randomization_z if reset_cfg else 0.0,
+        randomization_yaw=reset_cfg.randomization_yaw if reset_cfg else 0.0,
     )
     return KukaIiwaRobotEnv(robot, env_config)
 
@@ -93,6 +105,68 @@ def _make_env_processor(cfg: GymManipulatorConfig, device: str):
     )
 
 
+def _validate_action_recording_mode(mode: str) -> None:
+    if mode not in ("absolute", "relative_to_start"):
+        raise ValueError(
+            "`dataset.action_recording_mode` must be either 'absolute' or "
+            f"'relative_to_start'; got {mode!r}"
+        )
+
+
+def _validate_policy_action_names_for_mode(
+    dataset_metadata: LeRobotDatasetMetadata,
+    mode: str,
+) -> None:
+    if mode != "relative_to_start":
+        return
+
+    action_names = list(dataset_metadata.features["action"]["names"] or [])
+    if action_names != KUKA_RELATIVE_ACTION_NAMES:
+        raise ValueError(
+            "Relative action mode expects a policy trained with action names "
+            f"{KUKA_RELATIVE_ACTION_NAMES}, but loaded policy dataset has {action_names}. "
+            "Use a relative-to-start policy or set `dataset.action_recording_mode` to 'absolute'."
+        )
+
+
+def _angle_diff(angle: np.ndarray | float, origin: np.ndarray | float) -> np.ndarray | float:
+    return (np.asarray(angle) - np.asarray(origin) + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _episode_origin_from_observation(obs: dict) -> np.ndarray:
+    origin = np.asarray(obs["agent_pos"], dtype=np.float32).copy()
+    if origin.shape[0] < 6:
+        raise ValueError(f"KUKA agent_pos must have at least 6 pose values; got shape {origin.shape}")
+    return origin
+
+
+def _make_relative_observation(obs: dict, episode_origin: np.ndarray, mode: str) -> dict:
+    if mode == "absolute":
+        return obs
+
+    relative_obs = dict(obs)
+    agent_pos = np.asarray(relative_obs["agent_pos"], dtype=np.float32).copy()
+    agent_pos[:3] -= episode_origin[:3]
+    agent_pos[3:6] = _angle_diff(agent_pos[3:6], episode_origin[3:6]).astype(np.float32)
+    relative_obs["agent_pos"] = agent_pos
+    return relative_obs
+
+
+def _relative_policy_action_to_absolute(
+    action: dict[str, float],
+    episode_origin: np.ndarray,
+) -> dict[str, float]:
+    return {
+        "x.pos": float(episode_origin[0] + action.get("x.rel", action.get("x.pos", 0.0))),
+        "y.pos": float(episode_origin[1] + action.get("y.rel", action.get("y.pos", 0.0))),
+        "z.pos": float(episode_origin[2] + action.get("z.rel", action.get("z.pos", 0.0))),
+        "roll.pos": float(episode_origin[3] + action.get("roll.rel", action.get("roll.pos", 0.0))),
+        "pitch.pos": float(episode_origin[4] + action.get("pitch.rel", action.get("pitch.pos", 0.0))),
+        "yaw.pos": float(episode_origin[5] + action.get("yaw.rel", action.get("yaw.pos", 0.0))),
+        "gripper.pos": float(action.get("gripper.pos", episode_origin[-1])),
+    }
+
+
 def _apply_absolute_action_to_env(env, action: dict[str, float]) -> None:
     """Send an ACT absolute task-space action and keep env bookkeeping coherent."""
     env.robot.send_action(action)
@@ -117,8 +191,11 @@ def main() -> None:
         raw_cfg = json.load(f)
     cfg = draccus.decode(GymManipulatorConfig, raw_cfg)
     cfg.device = str(device)
+    action_recording_mode = cfg.dataset.action_recording_mode
+    _validate_action_recording_mode(action_recording_mode)
 
     dataset_metadata = LeRobotDatasetMetadata(DATASET_ID)
+    _validate_policy_action_names_for_mode(dataset_metadata, action_recording_mode)
 
     policy = ACTPolicy.from_pretrained(MODEL_ID)
     policy.to(device)
@@ -133,17 +210,20 @@ def main() -> None:
     env_processor = _make_env_processor(cfg, device=str(device))
     fps = cfg.env.fps or 30
     dt_s = 1.0 / float(fps)
+    print(f"Action recording mode: {action_recording_mode}")
 
     try:
         for episode_idx in range(MAX_EPISODES):
             obs, info = env.reset()
+            episode_origin = _episode_origin_from_observation(obs)
             env_processor.reset()
             policy.reset()
 
             for step_idx in range(MAX_STEPS_PER_EPISODE):
                 start_t = time.perf_counter()
 
-                transition = create_transition(observation=obs, info=info)
+                obs_for_policy = _make_relative_observation(obs, episode_origin, action_recording_mode)
+                transition = create_transition(observation=obs_for_policy, info=info)
                 transition = env_processor(transition)
                 observation = {
                     key: value
@@ -156,6 +236,8 @@ def main() -> None:
                     action = policy.select_action(observation)
                 action = postprocess(action)
                 robot_action = make_robot_action(action, dataset_metadata.features)
+                if action_recording_mode == "relative_to_start":
+                    robot_action = _relative_policy_action_to_absolute(robot_action, episode_origin)
                 _apply_absolute_action_to_env(env, robot_action)
 
                 obs = env._get_observation()
