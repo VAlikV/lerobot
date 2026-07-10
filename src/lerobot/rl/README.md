@@ -59,18 +59,38 @@ pip install -e ".[hilserl]"
 
 ### 7. Patch `transformers`
 
-Open the `modeling_utils.py` file:
+`self.post_init()` must be added at the end of the `__init__()` method of the `PreTrainedModel` class in `transformers/modeling_utils.py`. With the `lerobot` environment active, this script applies the patch automatically (it locates the file by importing transformers, and is safe to re-run — no editor or root access needed):
 
 ```bash
-gedit /home/<user>/miniconda3/envs/lerobot/lib/python3.12/site-packages/transformers/modeling_utils.py
+python - <<'PY'
+import ast
+from pathlib import Path
+import transformers.modeling_utils as m
+
+path = Path(m.__file__)
+src = path.read_text()
+marker = "self.post_init()  # lerobot-hilserl patch"
+if marker in src:
+    print(f"already patched: {path}")
+else:
+    tree = ast.parse(src)
+    cls = next(n for n in ast.walk(tree)
+               if isinstance(n, ast.ClassDef) and n.name == "PreTrainedModel")
+    init = next(n for n in cls.body
+                if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+    lines = src.splitlines(keepends=True)
+    lines.insert(init.end_lineno, f"        {marker}\n")
+    path.write_text("".join(lines))
+    print(f"patched: {path}")
+PY
 ```
 
-> Replace `<user>` with your actual username.
+To do it by hand instead, open the printed path in any editor (`nano`, `vim`, or `gedit` on a desktop machine), find `class PreTrainedModel`, and add `self.post_init()` as the last line of its `__init__()` method.
 
-Add the following line inside the `__init__()` method of the `PreTrainedModel` class:
+Verify:
 
-```python
-self.post_init()
+```bash
+grep -n "self.post_init()" $(python -c "import transformers.modeling_utils as m; print(m.__file__)") | head -1
 ```
 
 ### 8. Install Additional Dependencies
