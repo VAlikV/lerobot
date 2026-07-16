@@ -461,7 +461,7 @@ class KukaIiwaRobotEnv(gym.Env):
             r = self.config.randomization_z
             home[2] += float(rng.uniform(-r, r))
 
-        self.target_xyz = np.clip(np.array(home[:3], dtype=np.float32), self.ee_min, self.ee_max)
+        target_xyz = np.clip(np.array(home[:3], dtype=np.float32), self.ee_min, self.ee_max)
 
         target_yaw = 0.0 if self.use_yaw else float(self.config.fixed_yaw)
         if self.config.randomization_yaw > 0:
@@ -469,16 +469,36 @@ class KukaIiwaRobotEnv(gym.Env):
             target_yaw += float(rng.uniform(-r, r))
             if self.use_yaw:
                 target_yaw = float(np.clip(target_yaw, self.yaw_min, self.yaw_max))
-        self.target_yaw = target_yaw
 
         reset_fps = max(1, int(self.config.reset_fps))
         dt_s = 1.0 / float(reset_fps)
         steps = max(1, int(self.config.reset_time_s * reset_fps))
-        for _ in range(steps):
+
+        current_pose = self.robot._get_pose_observation()
+        start_xyz = np.array(
+            [current_pose["x.pos"], current_pose["y.pos"], current_pose["z.pos"]],
+            dtype=np.float32,
+        )
+        start_xyz = np.clip(start_xyz, self.ee_min, self.ee_max)
+
+        if self.use_yaw:
+            start_yaw = float(
+                (current_pose["yaw.pos"] - self.config.fixed_yaw + np.pi) % (2.0 * np.pi) - np.pi
+            )
+            start_yaw = float(np.clip(start_yaw, self.yaw_min, self.yaw_max))
+        else:
+            start_yaw = float(current_pose["yaw.pos"])
+
+        xyz_trajectory = np.linspace(start_xyz, target_xyz, steps, dtype=np.float32)
+        yaw_trajectory = np.linspace(start_yaw, target_yaw, steps, dtype=np.float32)
+
+        for xyz, yaw in zip(xyz_trajectory, yaw_trajectory, strict=True):
             start_t = time.perf_counter()
-            self._send_target(self.target_xyz, self.target_yaw, gripper_cmd=2)
+            self._send_target(xyz, float(yaw), gripper_cmd=2)
             precise_sleep(max(dt_s - (time.perf_counter() - start_t), 0.0))
 
+        self.target_xyz = target_xyz
+        self.target_yaw = target_yaw
         self.current_step = 0
         return self._get_observation(), {TeleopEvents.IS_INTERVENTION: False}
 
