@@ -423,25 +423,36 @@ class KukaIiwaRobotEnv(gym.Env):
         }
         return {"agent_pos": agent_pos, "pixels": pixels}
 
-    def _send_target(self, xyz: np.ndarray, yaw: float, gripper_cmd: int = 1) -> None:
+    def _send_target(
+        self,
+        xyz: np.ndarray,
+        yaw: float,
+        gripper_cmd: int = 1,
+        *,
+        send_gripper: bool = True,
+    ) -> None:
         target_yaw = float(self.config.fixed_yaw + yaw) if self.use_yaw else float(yaw)
-        gripper_pos = self.robot._get_pose_observation()["gripper.pos"]
-        if gripper_cmd == 0:
-            gripper_pos = GRIPPER_CLOSED
-        elif gripper_cmd == 2:
-            gripper_pos = GRIPPER_OPEN
+        gripper_pos = GRIPPER_OPEN
+        if send_gripper:
+            gripper_pos = self.robot._get_pose_observation()["gripper.pos"]
+            if gripper_cmd == 0:
+                gripper_pos = GRIPPER_CLOSED
+            elif gripper_cmd == 2:
+                gripper_pos = GRIPPER_OPEN
 
-        self.robot.send_action(
-            {
-                "x.pos": float(xyz[0]),
-                "y.pos": float(xyz[1]),
-                "z.pos": float(xyz[2]),
-                "roll.pos": float(self.config.fixed_roll),
-                "pitch.pos": float(self.config.fixed_pitch),
-                "yaw.pos": target_yaw,
-                "gripper.pos": float(gripper_pos),
-            }
-        )
+        action = {
+            "x.pos": float(xyz[0]),
+            "y.pos": float(xyz[1]),
+            "z.pos": float(xyz[2]),
+            "roll.pos": float(self.config.fixed_roll),
+            "pitch.pos": float(self.config.fixed_pitch),
+            "yaw.pos": target_yaw,
+            "gripper.pos": float(gripper_pos),
+        }
+        if send_gripper:
+            self.robot.send_action(action)
+        else:
+            self.robot._set_target_action(action)
 
     def reset(
         self,
@@ -472,7 +483,7 @@ class KukaIiwaRobotEnv(gym.Env):
 
         reset_fps = max(1, int(self.config.reset_fps))
         dt_s = 1.0 / float(reset_fps)
-        steps = max(1, int(self.config.reset_time_s * reset_fps))
+        reset_time_s = max(0.0, float(self.config.reset_time_s))
 
         current_pose = self.robot._get_pose_observation()
         start_xyz = np.array(
@@ -489,13 +500,32 @@ class KukaIiwaRobotEnv(gym.Env):
         else:
             start_yaw = float(current_pose["yaw.pos"])
 
-        xyz_trajectory = np.linspace(start_xyz, target_xyz, steps, dtype=np.float32)
-        yaw_trajectory = np.linspace(start_yaw, target_yaw, steps, dtype=np.float32)
+        if reset_time_s == 0.0:
+            self._send_target(target_xyz, target_yaw, gripper_cmd=2)
+        else:
+            reset_start_t = time.perf_counter()
+            next_tick_t = reset_start_t
+            gripper_sent = False
+            while True:
+                now_t = time.perf_counter()
+                alpha = min((now_t - reset_start_t) / reset_time_s, 1.0)
+                xyz = start_xyz + (target_xyz - start_xyz) * alpha
+                yaw = start_yaw + (target_yaw - start_yaw) * alpha
 
-        for xyz, yaw in zip(xyz_trajectory, yaw_trajectory, strict=True):
-            start_t = time.perf_counter()
-            self._send_target(xyz, float(yaw), gripper_cmd=2)
-            precise_sleep(max(dt_s - (time.perf_counter() - start_t), 0.0))
+                self._send_target(
+                    xyz.astype(np.float32, copy=False),
+                    float(yaw),
+                    gripper_cmd=2 if not gripper_sent else 1,
+                    send_gripper=not gripper_sent,
+                )
+                gripper_sent = True
+
+                if alpha >= 1.0:
+                    break
+
+                next_tick_t += dt_s
+                sleep_until_t = min(next_tick_t, reset_start_t + reset_time_s)
+                precise_sleep(max(sleep_until_t - time.perf_counter(), 0.0))
 
         self.target_xyz = target_xyz
         self.target_yaw = target_yaw
