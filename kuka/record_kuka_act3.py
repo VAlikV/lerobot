@@ -32,14 +32,14 @@ CONFIG_PATH = "kuka/configs/kuka_device_assemble.json"
 POLICY_DIR: str | None = None
 POLICY_DATASET_REPO_ID: str | None = None
 
-# POLICY_DIR: str | None = "outputs/device_assemble/act_stage1_comp/100000"
-# POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble_stage1_comp"
+POLICY_DIR: str | None = "outputs/device_assemble2/act_abs_stage3/70000"
+POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble2_abs_stage3"
 POLICY_DEVICE = "cuda"
 
-# REPO_ID = "local/kuka_test_2"
-REPO_ID = "local/kuka_device_assemble2_stage1_part4"
+REPO_ID = "local/kuka_test_2"
+# REPO_ID = "local/kuka_device_assemble2_abs_stage3_part3"
 TASK_DESCRIPTION = "kuka_assemble"
-NUM_EPISODES = 10
+NUM_EPISODES = 20
 EPISODE_TIME_S = 60
 FPS = 30
 
@@ -390,7 +390,7 @@ def main() -> None:
             step_start = time.perf_counter()
 
             probe_transition = transition.copy()
-            probe_transition[TransitionKey.ACTION] = neutral_action
+            probe_transition[TransitionKey.ACTION] = neutral_action.clone()
             probe_transition[TransitionKey.OBSERVATION] = (
                 env.get_raw_joint_positions() if hasattr(env, "get_raw_joint_positions") else {}
             )
@@ -410,10 +410,11 @@ def main() -> None:
                 and policy_bundle is not None
                 and is_intervention
             ):
-                gripper_cmd = policy_gripper_cmd
-                action_probe[TransitionKey.ACTION][-1] = float(gripper_cmd)
                 if not was_intervening:
-                    logger.info("Intervention started; synced gripper state with policy.")
+                    gripper_cmd = policy_gripper_cmd
+                    logger.info("Intervention started; initialized gripper state from policy.")
+                gripper_cmd = _apply_binary_gripper_latch(action_probe[TransitionKey.ACTION], gripper_cmd)
+                policy_gripper_cmd = gripper_cmd
             elif use_gripper and (is_intervention or policy_bundle is None):
                 gripper_cmd = _apply_binary_gripper_latch(action_probe[TransitionKey.ACTION], gripper_cmd)
             if (

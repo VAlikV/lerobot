@@ -52,18 +52,18 @@ class PolicyStage:
 POLICY_STAGES = [
     PolicyStage(
         name="stage1",
-        model_dir="outputs/device_assemble/act_stage1_comp/100000",
-        dataset_repo_id="local/kuka_device_assemble_stage1_comp",
+        model_dir="outputs/device_assemble2/act_abs_stage1/70000",
+        dataset_repo_id="local/kuka_device_assemble2_abs_stage1",
     ),
     PolicyStage(
         name="stage2",
-        model_dir="outputs/device_assemble/act_stage2/70000",
-        dataset_repo_id="local/kuka_device_assemble_stage2",
+        model_dir="outputs/device_assemble2/act_abs_stage2/70000",
+        dataset_repo_id="local/kuka_device_assemble2_abs_stage2",
     ),
     PolicyStage(
         name="stage3",
-        model_dir="outputs/device_assemble/act_stage3/70000",
-        dataset_repo_id="local/kuka_device_assemble_stage3",
+        model_dir="outputs/device_assemble2/act_abs_stage3/70000",
+        dataset_repo_id="local/kuka_device_assemble2_abs_stage3",
     ),
 ]
 

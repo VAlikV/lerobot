@@ -717,6 +717,9 @@ def make_processors(
         AddTeleopEventsAsInfoStep(teleop_device=teleop_device),
         InterventionActionProcessorStep(
             use_gripper=cfg.processor.gripper.use_gripper if cfg.processor.gripper is not None else False,
+            use_yaw=bool(getattr(cfg.processor.inverse_kinematics, "use_yaw", False))
+            if cfg.processor.inverse_kinematics is not None
+            else False,
             terminate_on_success=terminate_on_success,
         ),
     ]
