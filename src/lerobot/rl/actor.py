@@ -102,8 +102,55 @@ from .gym_manipulator import (
 # Main entry point
 
 
+def _apply_nstep_returns(transitions: list, n: int, gamma: float) -> list:
+    """Rewrite each transition to its n-step return version.
+
+    For transition t: reward → Σ_{k<m} γ^k r_{t+k}, next_state → s_{t+m},
+    done → terminal-within-window, and stores γ^m in complementary_info["discount_n"]
+    so the critic bootstraps with the correct per-transition discount.
+    m = min(n, steps remaining to episode end / terminal).
+    """
+    T = len(transitions)
+    out = []
+    for t in range(T):
+        R = 0.0
+        disc = 1.0
+        done_n = False
+        last_idx = t
+        for k in range(n):
+            idx = t + k
+            if idx >= T:
+                break
+            tr = transitions[idx]
+            R += disc * float(tr["reward"])
+            disc *= gamma
+            last_idx = idx
+            if bool(tr["done"]):
+                done_n = True
+                break
+        ci = dict(transitions[t].get("complementary_info") or {})
+        ci["discount_n"] = float(disc)  # γ^m
+        out.append(
+            Transition(
+                state=transitions[t]["state"],
+                action=transitions[t]["action"],
+                reward=R,
+                next_state=transitions[last_idx]["next_state"],
+                done=done_n,
+                truncated=transitions[t]["truncated"],
+                complementary_info=ci,
+            )
+        )
+    return out
+
+
 @parser.wrap()
 def actor_cli(cfg: TrainRLServerPipelineConfig):
+    # Actor never writes to output_dir (only the learner does), but it shares cfg
+    # with the learner under HIL-SERL. Skip the "output_dir already exists" check
+    # so re-launching the actor against an existing run doesn't crash. The learner
+    # still gets the protective check because it doesn't set this env var.
+    os.environ.setdefault("LEROBOT_SKIP_OUTPUT_DIR_CHECK", "1")
     cfg.validate()
     display_pid = False
     if not use_threads(cfg):
@@ -253,28 +300,151 @@ def act_with_policy(
     ### Instantiate the policy in both the actor and learner processes
     ### To avoid sending a SACPolicy object through the port, we create a policy instance
     ### on both sides, the learner sends the updated parameters every n steps to update the actor's parameters
-    policy: SACPolicy = make_policy(
+    policy = make_policy(
         cfg=cfg.policy,
         env_cfg=cfg.env,
     )
     policy = policy.eval()
     assert isinstance(policy, nn.Module)
 
+    # DSRL: attach frozen diffusion policy + its preprocessor for action generation
+    if getattr(cfg.policy, "type", None) == "dsrl_ext":
+        dp_path = getattr(cfg.policy, "diffusion_pretrained_path", None)
+        if dp_path:
+            from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+            from lerobot.policies.factory import make_pre_post_processors as _make_dp_pp
+
+            dp = DiffusionPolicy.from_pretrained(pretrained_name_or_path=dp_path)
+            dp.to(cfg.policy.device)
+            dp_pre, dp_post = _make_dp_pp(
+                policy_cfg=dp.config, pretrained_path=dp_path,
+                preprocessor_overrides={"device_processor": {"device": cfg.policy.device}},
+            )
+            policy.load_diffusion_policy(dp, preprocessor=dp_pre, postprocessor=dp_post)
+            logging.info("[ACTOR] DSRL: loaded frozen diffusion policy + preprocessor from %s", dp_path)
+        else:
+            logging.warning("[ACTOR] DSRL: no diffusion_pretrained_path — actor will output raw noise")
+
+    # Diagnostic: the resolved policy class MUST match cfg.policy.type. If
+    # cfg says qc_ext but `policy` ends up SACPolicy, something is wrong
+    # (plugin not loaded → draccus silently fell back, OR cfg.policy.type
+    # was overridden via CLI). This print survives buffering + tee.
+    print(
+        f"[ACTOR-DBG] policy class = {type(policy).__name__} "
+        f"({type(policy).__module__}); cfg.policy.type = {cfg.policy.type!r}; "
+        f"has load_actor_state_dict = {hasattr(policy, 'load_actor_state_dict')}",
+        flush=True,
+    )
+    logging.info(
+        "[ACTOR] policy class=%s module=%s cfg.policy.type=%s "
+        "has_load_actor_state_dict=%s",
+        type(policy).__name__,
+        type(policy).__module__,
+        cfg.policy.type,
+        hasattr(policy, "load_actor_state_dict"),
+    )
+
+    # CRITICAL: load the TOP-level policy's pre/post-processors and apply
+    # them around every `policy.select_action` call. Without this, QC (and
+    # any other plugin policy trained on normalized obs) receives raw
+    # uint8 images / un-normalized state and outputs garbage. See
+    # `feedback_eval_preprocessor_critical.md` — same failure class that
+    # bit residual-SAC, fixed there via `_base_act` (which wraps the
+    # FROZEN BASE policy's processor, NOT the top-level policy's).
+    #
+    # Distinct from `_base_policy._pre_processor` (residual base for ACT):
+    # this is the TOP-level policy's processor, loaded from the same
+    # `pretrained_path` that `make_policy` consumed. SAC training from
+    # scratch (no pretrained_path) still gets fresh processors — no
+    # back-compat break.
+    from lerobot.policies.factory import make_pre_post_processors as _make_pp
+    try:
+        _policy_pre_processor, _policy_post_processor = _make_pp(
+            policy_cfg=cfg.policy,
+            pretrained_path=getattr(cfg.policy, "pretrained_path", None),
+        )
+        logging.info(
+            "[ACTOR] policy pre/post-processor loaded (pretrained_path=%s)",
+            getattr(cfg.policy, "pretrained_path", None),
+        )
+    except Exception as _e:
+        # SAC from-scratch path may not have pretrained processors yet.
+        # Continue without; the existing behavior (no preprocessing in
+        # select_action wrap) is preserved.
+        logging.warning(
+            "[ACTOR] could not build policy pre/post-processors (%s) — "
+            "continuing with un-wrapped select_action; this is OK for SAC-from-scratch "
+            "but WILL produce garbage for any policy trained on normalized obs.", _e,
+        )
+        _policy_pre_processor = None
+        _policy_post_processor = None
+
     obs, info = online_env.reset()
     env_processor.reset()
     action_processor.reset()
+    # Reset chunk-aware policies (e.g. QC) so any stale action queue from a
+    # prior run is cleared. SAC's reset() is a no-op, so back-compat safe.
+    if hasattr(policy, "reset"):
+        policy.reset()
 
     # Process initial observation
     transition = create_transition(observation=obs, info=info)
     transition = env_processor(transition)
 
+    # Residual mode: cache a frozen base policy + action_dim to attach
+    # `observation.base_action` onto every observation flowing into the
+    # buffer. ACT manages its own chunk queue across calls.
+    _residual_mode = getattr(cfg.policy, "residual_mode", False)
+    _base_policy = getattr(policy, "_base_policy", None) if _residual_mode else None
+    def _base_act(obs):
+        # ACT base needs the saved preprocessor (normalize images + state)
+        # before select_action; otherwise raw uint8 → garbage actions.
+        pre = getattr(_base_policy, "_pre_processor", None)
+        b = pre(obs) if pre is not None else obs
+        return _base_policy.select_action(b)
+
+    if _residual_mode and _base_policy is not None:
+        _base_policy.reset()
+        _ba = _base_act(transition[TransitionKey.OBSERVATION])
+        transition[TransitionKey.OBSERVATION]["observation.base_action"] = _ba
+
     # NOTE: For the moment we will solely handle the case of a single environment
     sum_reward_episode = 0
     list_transition_to_send_to_learner = []
     episode_intervention = False
+    # Tracks IS_INTERVENTION across steps for edge detection. Used by chunk-aware
+    # policies (QC) to flush their internal action queue at intervention onset.
+    # SAC ignores this; remains False forever.
+    prev_intervention_flag = False
+    # Tracks whether the episode ended with a Triangle (manual SUCCESS) flag.
+    # Set True on any frame with info[TeleopEvents.SUCCESS]=True. If False at
+    # episode end, transitions are DISCARDED (not pushed to learner).
+    episode_success = False
+    # Counter of how many stage-advance button presses landed this episode.
+    # Each press fires +stage_advance_bonus reward in the SARM step.
+    episode_stage_advances = 0
+    # Discard counter for telemetry.
+    discarded_episodes = 0
+    # Rolling buffers for episode-level moving averages (last N completed eps).
+    _ROLLING_N = 5
+    rolling_rewards: list[float] = []
+    rolling_successes: list[int] = []
+    rolling_stage_advances: list[int] = []
     # Add counters for intervention rate calculation
     episode_intervention_steps = 0
     episode_total_steps = 0
+    # Track SARM progress per episode (independent of reward shaping mode).
+    last_sarm_progress = 0.0
+    max_sarm_progress = 0.0
+    # Per-episode gripper diagnostics (residual mode only): we want to confirm
+    # the residual is actually using its gripper dim. Tracks running sums of
+    # base / combined / residual gripper values across the episode and counts
+    # how many steps the residual flipped the post-deadband band.
+    grip_base_sum = 0.0
+    grip_combined_sum = 0.0
+    grip_residual_abs_sum = 0.0
+    grip_residual_signed_sum = 0.0
+    grip_flip_count = 0  # frac of steps where deadband band(base) != band(combined)
 
     policy_timer = TimerManager("Policy inference", log=False)
 
@@ -290,11 +460,80 @@ def act_with_policy(
 
         # Time policy inference and check if it meets FPS requirement
         with policy_timer:
-            # Extract observation from transition for policy
-            action = policy.select_action(batch=observation)
+            # Extract observation from transition for policy.
+            # CRITICAL: normalize via the TOP-level policy's preprocessor
+            # before select_action; otherwise QC (or any policy trained
+            # on normalized obs) outputs garbage. See
+            # `feedback_eval_preprocessor_critical.md`.
+            if _policy_pre_processor is not None:
+                _batch = _policy_pre_processor(observation)
+            else:
+                _batch = observation
+            action = policy.select_action(batch=_batch)
+            if _policy_post_processor is not None:
+                action = _policy_post_processor(action)
         policy_fps = policy_timer.fps_last
 
         log_policy_frequency_issue(policy_fps=policy_fps, cfg=cfg, interaction_step=interaction_step)
+
+        # Residual-mode gripper diagnostics: track per-step base / combined /
+        # residual gripper to confirm the residual head actually moves it.
+        if _residual_mode:
+            try:
+                _act_full = action.detach().cpu().numpy().flatten() if hasattr(action, "detach") else np.asarray(action).flatten()
+                _base_full = observation["observation.base_action"].detach().cpu().numpy().flatten()
+                _g_base = float(_base_full[-1])
+                _g_combined = float(_act_full[-1])
+                _g_residual = _g_combined - _g_base
+                grip_base_sum += _g_base
+                grip_combined_sum += _g_combined
+                grip_residual_signed_sum += _g_residual
+                grip_residual_abs_sum += abs(_g_residual)
+                # Deadband band classification: -1 if a < -db, +1 if a > db, else 0.
+                _db = (
+                    cfg.env.processor.gripper.continuous_gripper_deadband
+                    if cfg.env.processor.gripper is not None
+                    else 0.33
+                )
+                _band_base = -1 if _g_base < -_db else (1 if _g_base > _db else 0)
+                _band_comb = -1 if _g_combined < -_db else (1 if _g_combined > _db else 0)
+                if _band_base != _band_comb:
+                    grip_flip_count += 1
+            except Exception:
+                pass
+
+        # Visualization: pass action arrows to the underlying mujoco env so the
+        # passive viewer renders them on top of the simulation. In residual
+        # mode we draw two arrows (base direction in green, residual delta in
+        # red); otherwise one arrow showing the executed action.
+        try:
+            inner_env = online_env
+            while hasattr(inner_env, "env"):
+                inner_env = inner_env.env
+            if hasattr(inner_env, "set_action_arrows") and hasattr(inner_env, "get_tcp_position"):
+                tcp = np.asarray(inner_env.get_tcp_position(), dtype=np.float64).flatten()
+                # Visible-arrow length tuning: typical normed action mag ~ 0.5,
+                # we want arrow ~5cm. Scale = 0.10 m / unit.
+                arrow_scale = 0.10
+                act_np = action.detach().cpu().numpy().flatten() if hasattr(action, "detach") else np.asarray(action).flatten()
+                act_np = act_np.astype(np.float64)
+                arrows: list = []
+                if _residual_mode:
+                    base_np = observation["observation.base_action"].detach().cpu().numpy().flatten().astype(np.float64)
+                    end_base = tcp + arrow_scale * base_np[:3]
+                    arrows.append((tcp, end_base, (0.0, 1.0, 0.2, 0.9)))  # base = green
+                    res_np = act_np[:3] - base_np[:3]
+                    if np.linalg.norm(res_np) > 1e-4:
+                        end_res = end_base + arrow_scale * 3.0 * res_np  # 3x to make small residual visible
+                        arrows.append((end_base, end_res, (1.0, 0.2, 0.0, 0.9)))  # residual = red
+                else:
+                    end_act = tcp + arrow_scale * act_np[:3]
+                    arrows.append((tcp, end_act, (0.0, 0.6, 1.0, 0.9)))  # policy action = blue
+                inner_env.set_action_arrows(arrows)
+        except Exception as _viz_err:
+            # Visualization is best-effort; don't kill training on render bugs.
+            if interaction_step < 5:
+                logging.warning("[ACTOR] action arrow viz failed: %s", _viz_err)
 
         # Use the new step function
         new_transition = step_env_and_process_transition(
@@ -304,6 +543,13 @@ def act_with_policy(
             env_processor=env_processor,
             action_processor=action_processor,
         )
+
+        # Residual mode: attach next base_action to next observation. Done
+        # *after* env_processor so the obs is in the canonical (CHW float)
+        # form expected by the base policy. ACT will pop from its chunk queue.
+        if _residual_mode and _base_policy is not None:
+            _ba = _base_act(new_transition[TransitionKey.OBSERVATION])
+            new_transition[TransitionKey.OBSERVATION]["observation.base_action"] = _ba
 
         # Display camera feeds if configured
         display_cameras = (
@@ -364,17 +610,62 @@ def act_with_policy(
 
         # Check for intervention from transition info
         intervention_info = new_transition[TransitionKey.INFO]
-        if intervention_info.get(TeleopEvents.IS_INTERVENTION, False):
+        _is_interv_now = bool(intervention_info.get(TeleopEvents.IS_INTERVENTION, False))
+        # Flush chunk queue on BOTH intervention edges for chunk-aware policies
+        # (e.g. QC). Rising edge (False -> True): user just grabbed control;
+        # drop the autonomous chunk so the next teleop action is applied
+        # cleanly. Falling edge (True -> False): user released; drop the
+        # stale chunk that was generated mid-intervention against outdated
+        # state, force regeneration from the current (post-intervention)
+        # observation. Gated by cfg flag so SAC default behavior is unchanged.
+        _edge_rising = _is_interv_now and not prev_intervention_flag
+        _edge_falling = (not _is_interv_now) and prev_intervention_flag
+        if (
+            (_edge_rising or _edge_falling)
+            and getattr(cfg.policy, "flush_chunk_on_intervention", False)
+            and hasattr(policy, "reset")
+        ):
+            policy.reset()
+        prev_intervention_flag = _is_interv_now
+        if _is_interv_now:
             episode_intervention = True
             episode_intervention_steps += 1
+        # Latch manual SUCCESS (Triangle). Used to gate the learner push at
+        # episode end: only successful episodes contribute to training.
+        if intervention_info.get(TeleopEvents.SUCCESS, False):
+            episode_success = True
+        # Stage-advance counter (each gamepad stage-button press during the ep).
+        if intervention_info.get(TeleopEvents.STAGE_ADVANCE, False):
+            episode_stage_advances += 1
+        # Track SARM progress (set by SARMRewardProcessorStep regardless of reward_mode).
+        sp = intervention_info.get("sarm_progress")
+        if sp is not None:
+            try:
+                last_sarm_progress = float(sp)
+                if last_sarm_progress > max_sarm_progress:
+                    max_sarm_progress = last_sarm_progress
+            except (TypeError, ValueError):
+                pass
 
         is_intervention = bool(intervention_info.get(TeleopEvents.IS_INTERVENTION, False))
         complementary_info = {
             "discrete_penalty": torch.tensor(
                 [new_transition[TransitionKey.COMPLEMENTARY_DATA].get("discrete_penalty", 0.0)]
             ),
-            TeleopEvents.IS_INTERVENTION.value: int(is_intervention),
+            # Propagate intervention flag to learner so the dual-buffer mode
+            # can route teleop frames into the offline (intervention-only)
+            # replay buffer. Without this, all transitions land in the
+            # online buffer regardless of whether the human took control.
+            # Use the enum's .value (string) — torch.save/load with
+            # weights_only=True can strip non-tensor objects like Enum keys.
+            TeleopEvents.IS_INTERVENTION.value: torch.tensor(
+                [1 if bool(_is_interv_now) else 0], dtype=torch.int8
+            ),
         }
+        # DSRL: store the noise vector used to generate the action
+        if hasattr(policy, "_last_noise") and policy._last_noise is not None:
+            complementary_info["noise"] = policy._last_noise.squeeze(0)
+
         # Create transition for learner (convert to old format)
         list_transition_to_send_to_learner.append(
             Transition(
@@ -392,9 +683,26 @@ def act_with_policy(
         transition = new_transition
 
         if done or truncated:
-            logging.info(f"[ACTOR] Global step {interaction_step}: Episode reward: {sum_reward_episode}")
+            logging.info(
+                f"[ACTOR] Global step {interaction_step}: Episode reward: {sum_reward_episode} "
+                f"success={episode_success} steps={episode_total_steps}"
+            )
 
             update_policy_parameters(policy=policy, parameters_queue=parameters_queue, device=device)
+
+            # DSRL n-step returns: rewrite each transition's reward/next_state/done
+            # to n-step versions before pushing. We have the full episode here.
+            _dsrl_n = int(getattr(cfg.policy, "n_step", 1) or 1)
+            if (
+                getattr(cfg.policy, "type", None) == "dsrl_ext"
+                and _dsrl_n > 1
+                and len(list_transition_to_send_to_learner) > 0
+            ):
+                list_transition_to_send_to_learner = _apply_nstep_returns(
+                    list_transition_to_send_to_learner,
+                    n=_dsrl_n,
+                    gamma=float(getattr(cfg.policy, "discount", 0.99)),
+                )
 
             if len(list_transition_to_send_to_learner) > 0:
                 push_transitions_to_transport_queue(
@@ -411,14 +719,45 @@ def act_with_policy(
             if episode_total_steps > 0:
                 intervention_rate = episode_intervention_steps / episode_total_steps
 
+            # Per-episode gripper diagnostics (residual mode).
+            grip_metrics = {}
+            if _residual_mode and episode_total_steps > 0:
+                grip_metrics = {
+                    "Gripper base mean": grip_base_sum / episode_total_steps,
+                    "Gripper combined mean": grip_combined_sum / episode_total_steps,
+                    "Gripper residual mean": grip_residual_signed_sum / episode_total_steps,
+                    "Gripper residual abs mean": grip_residual_abs_sum / episode_total_steps,
+                    "Gripper band-flip rate": grip_flip_count / episode_total_steps,
+                }
+
+            # Rolling moving avgs over last N completed episodes.
+            rolling_rewards.append(float(sum_reward_episode))
+            rolling_successes.append(int(episode_success))
+            rolling_stage_advances.append(int(episode_stage_advances))
+            for _buf in (rolling_rewards, rolling_successes, rolling_stage_advances):
+                if len(_buf) > _ROLLING_N:
+                    _buf.pop(0)
+            _roll_reward = sum(rolling_rewards) / max(len(rolling_rewards), 1)
+            _roll_success = sum(rolling_successes) / max(len(rolling_successes), 1)
+            _roll_stage = sum(rolling_stage_advances) / max(len(rolling_stage_advances), 1)
+
             # Send episodic reward to the learner
             interactions_queue.put(
                 python_object_to_bytes(
                     {
                         "Episodic reward": sum_reward_episode,
+                        "Episode terminal SARM progress": last_sarm_progress,
+                        "Episode max SARM progress": max_sarm_progress,
                         "Interaction step": interaction_step,
                         "Episode intervention": int(episode_intervention),
+                        "Episode success": int(episode_success),
+                        "Episode stage advances": episode_stage_advances,
+                        "Episode discarded total": discarded_episodes,
                         "Intervention rate": intervention_rate,
+                        "Rolling reward (last 5)": _roll_reward,
+                        "Rolling success (last 5)": _roll_success,
+                        "Rolling stage advances (last 5)": _roll_stage,
+                        **grip_metrics,
                         **stats,
                     }
                 )
@@ -427,17 +766,37 @@ def act_with_policy(
             # Reset intervention counters and environment
             sum_reward_episode = 0.0
             episode_intervention = False
+            episode_success = False
+            episode_stage_advances = 0
             episode_intervention_steps = 0
             episode_total_steps = 0
+            last_sarm_progress = 0.0
+            max_sarm_progress = 0.0
+            grip_base_sum = 0.0
+            grip_combined_sum = 0.0
+            grip_residual_signed_sum = 0.0
+            grip_residual_abs_sum = 0.0
+            grip_flip_count = 0
 
             # Reset environment and processors
             obs, info = online_env.reset()
             env_processor.reset()
             action_processor.reset()
+            # Reset main policy (chunk-aware policies need to flush their
+            # action queue at episode boundaries). SAC.reset() is no-op.
+            if hasattr(policy, "reset"):
+                policy.reset()
+            prev_intervention_flag = False
 
             # Process initial observation
             transition = create_transition(observation=obs, info=info)
             transition = env_processor(transition)
+
+            # Residual mode: clear ACT's chunk queue and attach fresh base_action.
+            if _residual_mode and _base_policy is not None:
+                _base_policy.reset()
+                _ba = _base_act(transition[TransitionKey.OBSERVATION])
+                transition[TransitionKey.OBSERVATION]["observation.base_action"] = _ba
 
         if cfg.env.fps is not None:
             dt_time = time.perf_counter() - start_time
@@ -710,7 +1069,15 @@ def update_policy_parameters(policy: SACPolicy, parameters_queue: Queue, device)
 
         # Load actor state dict
         actor_state_dict = move_state_dict_to_device(state_dicts["policy"], device=device)
-        policy.actor.load_state_dict(actor_state_dict)
+        # Plugins (e.g. QCPolicy) with no monolithic `.actor` submodule opt
+        # into this path by defining `load_actor_state_dict(payload)`. The
+        # payload shape is plugin-defined (typically a {name: state_dict}
+        # nested dict, mirroring `get_actor_state_dict`). SAC keeps the
+        # untouched `policy.actor.load_state_dict(...)` path below.
+        if hasattr(policy, "load_actor_state_dict"):
+            policy.load_actor_state_dict(actor_state_dict)
+        else:
+            policy.actor.load_state_dict(actor_state_dict)
 
         # Load discrete critic if present
         if hasattr(policy, "discrete_critic") and "discrete_critic" in state_dicts:

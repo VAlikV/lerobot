@@ -190,6 +190,69 @@ class RewardClassifierConfig:
 
 
 @dataclass
+class EnvRewardModelConfig:
+    """Unified reward-model config. Dispatches on ``type``.
+
+    Supported values of ``type``:
+    - ``"manual"`` / ``"none"``: no reward model (reward comes from env/teleop button).
+    - ``"height_gripper"``: state-based lift detector (needs z_index, gripper_index).
+    - ``"cnn"``: binary image classifier (needs pretrained_path).
+    - ``"sarm"``: stage-aware reward model (needs pretrained_path, task).
+
+    Extra keys not relevant to the chosen type are ignored at build time.
+    """
+
+    type: str = "manual"
+    pretrained_path: str | None = None
+    device: str = "cpu"
+    success_threshold: float = 0.5
+    success_reward: float = 1.0
+    # height_gripper
+    height_threshold: float = 0.21
+    gripper_closed_threshold: float = 0.5
+    z_index: int = 2
+    gripper_index: int = 7
+    # sarm
+    task: str = ""
+    head_mode: str = "sparse"
+    reward_mode: str = "binary"
+    stats_dataset_repo_id: str | None = None
+    eval_every_n_steps: int = 1
+    verbose: bool = False
+    verbose_every_n_steps: int = 10
+    # Extra reward added on the step that first crosses success_threshold (any
+    # reward_mode). 0.0 = disabled. Used by SARM step for residual RL.
+    success_terminal_bonus: float = 0.0
+    # Extra reward added on the step where the user presses the gamepad FAILURE
+    # button (Cross). Negative value penalizes user-flagged failures. RERECORD
+    # and timeout do NOT trigger this — only explicit FAILURE. SARM step only.
+    failure_terminal_penalty: float = 0.0
+    # Extra reward on each gamepad stage-advance button press (additive across
+    # multiple presses per episode). Provides ground-truth stage progress when
+    # SARM is too noisy. Episode does NOT terminate on stage advance.
+    stage_advance_bonus: float = 0.0
+    # Per-step penalty added to every transition (e.g. -1.0 for DSRL-style
+    # step cost). 0.0 = disabled.
+    step_penalty: float = 0.0
+    # When True, the reward model does NOT terminate the episode when progress
+    # crosses success_threshold. Reward / bonus still fires; termination is
+    # left to the human SUCCESS button (gamepad) or env truncation.
+    disable_threshold_termination: bool = False
+    # SARM only: when True, run "sync" inference (shift positive deltas to past,
+    # adds latency = max_future_delta * dt). Matches offline sync eval.
+    sync_inference: bool = False
+    # SARM only: when True (default), replicate first frame to fill ring buffer
+    # at episode start. Set False if SARM is sensitive (high sw → stage flips
+    # in first 5-10 frames causing false success).
+    buffer_prewarm: bool = True
+    # SARM only: skip eval for first N steps of episode (return progress=0).
+    # Prevents OOD-window spurious progress before buffer fills with real frames.
+    warmup_steps: int = 0
+    # SARM only: optional JSONL append path for per-step debug log.
+    log_jsonl_path: str | None = None
+
+
+@dataclass
 class InverseKinematicsConfig:
     """Configuration for inverse kinematics processing.
 
@@ -231,6 +294,17 @@ class GripperConfig:
 
     use_gripper: bool = True
     gripper_penalty: float = 0.0
+    # When True, treat the 5th action dim as a continuous gripper command in
+    # [-1, +1] (close, stay, open) and threshold to {0, 1, 2} only at the env
+    # boundary. Used by V6+ HIL-SERL to drop the discrete-critic head.
+    continuous_gripper: bool = False
+    continuous_gripper_deadband: float = 0.33
+    # When True, record the gripper as a *continuous width target in [0, 1]*
+    # (0 = closed, 1 = open) instead of the discrete CLOSE/STAY/OPEN convention.
+    # Toggle buttons emit 0.0 / 1.0 directly; the action processor pipeline
+    # skips discretization; adapter passes the value straight to the gripper
+    # actuator. Used for ACT BC datasets that learn continuous gripper control.
+    record_gripper_width: bool = False
 
 
 @dataclass
@@ -257,7 +331,15 @@ class HILSerlProcessorConfig:
     reset: ResetConfig | None = None
     inverse_kinematics: InverseKinematicsConfig | None = None
     reward_classifier: RewardClassifierConfig | None = None
+    reward_model: EnvRewardModelConfig | None = None
     max_gripper_pos: float | None = 100.0
+    # When non-empty, inserts a StageAnnotatorProcessorStep into the action
+    # pipeline (sim / gym_hil / rc10 only). Operator presses the gamepad
+    # stage_advance_button mid-teleop to advance to the next stage. The
+    # per-episode (names, start_frames, end_frames) triple is flushed at
+    # episode end and written back to the dataset's episodes.parquet as
+    # sparse + dense subtask columns for SARM dual-mode training.
+    stage_names: list[str] | None = None
 
 
 @EnvConfig.register_subclass(name="gym_manipulator")
@@ -270,6 +352,44 @@ class HILSerlRobotEnvConfig(EnvConfig):
     processor: HILSerlProcessorConfig = field(default_factory=HILSerlProcessorConfig)
 
     name: str = "real_robot"
+
+    # Run env in fast (non-realtime) mode where supported (e.g. sim_assembling).
+    # Actor rollouts then advance as fast as compute allows. No effect on real robots.
+    realtime: bool = True
+
+    # Rendering mode for sim envs. Options (sim_assembling):
+    #   "rgb_array" (default) — offscreen (pipeline-only, headless-safe)
+    #   "human"               — interactive MuJoCo viewer window (needs a display)
+    #   "all"                 — viewer + rgb_array (both)
+    # Ignored by real-robot envs.
+    render_mode: str = "rgb_array"
+
+    # Max per-step EE delta in metres when stick is at full deflection (sim_assembling).
+    # At control_hz=20Hz this caps EE speed to (action_step_size * 20) m/s.
+    # 0.005 → 10 cm/s (comfortable for manual teleop).
+    # 0.025 → 50 cm/s (too aggressive for humans, fine for RL policy rollout).
+    action_step_size: float = 0.005
+
+    # Max per-step yaw rotation in radians when right-stick-horizontal is at
+    # full deflection (sim_assembling with include_yaw_slot=True).
+    # 0.05 rad ≈ 2.9° per tick. At 20 Hz → ~57°/s, comfortable for teleop.
+    yaw_step_size: float = 0.05
+
+    # If True (and env supports it), sim action is 5D [dx, dy, dz, dyaw, gripper]
+    # and the right stick horizontal drives EE yaw. If False, 4D [dx, dy, dz, gripper].
+    include_yaw_slot: bool = False
+
+    # Translate every free-body object by this xyz offset at reset (sim_assembling
+    # only). Useful to spawn objects closer to the EE start pose without editing
+    # scene.xml. EE start is roughly (0.10, -0.65, 0.36); scene.xml anchors the
+    # three nested objects near (-0.15, -0.65, 0.16..0.18). An offset of
+    # (0.25, 0.0, 0.0) re-centers them directly under the EE.
+    object_spawn_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    # Camera render size (sim_assembling only). Default 224 — set to 128 to
+    # match SARM ckpts trained on 128x128 datasets. CLIP processor will still
+    # internally resize to 224 for encoding; this only affects the source.
+    image_size: tuple[int, int] = (224, 224)
 
     @property
     def gym_kwargs(self) -> dict:
