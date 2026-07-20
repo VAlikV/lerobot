@@ -4,6 +4,7 @@ import json
 import logging
 import time
 
+import cv2
 import draccus
 import numpy as np
 import torch
@@ -46,6 +47,10 @@ FPS = 30
 N_ACTION_STEPS = 30
 
 USE_TTS = True
+
+SHOW_FORCE_VECTOR = True
+FORCE_VECTOR_SCALE_N = 50.0
+FORCE_WINDOW_SIZE = 600
 # ----------------------------------------------------------------------ж------
 
 
@@ -58,6 +63,94 @@ KUKA_RELATIVE_ACTION_NAMES = [
     "yaw.rel",
     "gripper.pos",
 ]
+
+
+class ForceVectorVisualizer:
+    """Realtime isometric view of the KUKA force vector [Fx, Fy, Fz]."""
+
+    WINDOW_NAME = "KUKA force vector"
+
+    def __init__(self, *, scale_n: float, window_size: int) -> None:
+        if scale_n <= 0:
+            raise ValueError("`FORCE_VECTOR_SCALE_N` must be greater than zero.")
+        self.scale_n = float(scale_n)
+        self.window_size = int(window_size)
+        self.origin = np.array([self.window_size // 2, self.window_size // 2], dtype=np.float32)
+
+        # Isometric projection: columns are the screen directions of X, Y and Z.
+        self.projection = np.array(
+            [
+                [0.866, -0.866, 0.0],
+                [0.5, 0.5, -1.0],
+            ],
+            dtype=np.float32,
+        )
+        self.axis_length_px = int(self.window_size * 0.32)
+
+    def _project(self, vector: np.ndarray, length_px: float) -> tuple[int, int]:
+        point = self.origin + self.projection @ vector * float(length_px)
+        return int(round(point[0])), int(round(point[1]))
+
+    def update(self, obs: dict) -> None:
+        agent_pos = np.asarray(obs["agent_pos"], dtype=np.float32)
+        if agent_pos.shape[0] < 9:
+            raise ValueError(
+                "KUKA force visualization expects agent_pos layout "
+                "[x, y, z, roll, pitch, yaw, Fx, Fy, Fz, ...]; "
+                f"got shape {agent_pos.shape}."
+            )
+
+        force = agent_pos[6:9]
+        magnitude = float(np.linalg.norm(force))
+        canvas = np.full((self.window_size, self.window_size, 3), 245, dtype=np.uint8)
+        origin = tuple(self.origin.astype(int))
+
+        axis_colors = [(40, 40, 220), (40, 170, 40), (220, 100, 30)]
+        for axis_idx, (label, color) in enumerate(zip(("X", "Y", "Z"), axis_colors, strict=True)):
+            direction = np.zeros(3, dtype=np.float32)
+            direction[axis_idx] = 1.0
+            endpoint = self._project(direction, self.axis_length_px)
+            cv2.arrowedLine(canvas, origin, endpoint, color, 2, cv2.LINE_AA, tipLength=0.08)
+            cv2.putText(
+                canvas,
+                label,
+                (endpoint[0] + 7, endpoint[1] - 7),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+
+        normalized_force = force / self.scale_n
+        force_endpoint = self._project(normalized_force, self.axis_length_px)
+        cv2.arrowedLine(canvas, origin, force_endpoint, (20, 20, 20), 5, cv2.LINE_AA, tipLength=0.12)
+        cv2.circle(canvas, origin, 5, (20, 20, 20), -1, cv2.LINE_AA)
+
+        lines = (
+            f"Fx: {force[0]:+8.2f} N",
+            f"Fy: {force[1]:+8.2f} N",
+            f"Fz: {force[2]:+8.2f} N",
+            f"|F|: {magnitude:8.2f} N",
+            f"Scale: {self.scale_n:.1f} N",
+        )
+        for row, text in enumerate(lines):
+            cv2.putText(
+                canvas,
+                text,
+                (20, 35 + row * 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (20, 20, 20),
+                2,
+                cv2.LINE_AA,
+            )
+
+        cv2.imshow(self.WINDOW_NAME, canvas)
+        cv2.waitKey(1)
+
+    def close(self) -> None:
+        cv2.destroyWindow(self.WINDOW_NAME)
 
 
 def _validate_dataset_coordinate_mode(mode: str) -> None:
@@ -331,8 +424,18 @@ def main() -> None:
     neutral_action = _neutral_delta_action(env, use_gripper=use_gripper)
     dt_s = 1.0 / float(FPS)
     max_episode_steps = int(EPISODE_TIME_S * FPS)
+    force_visualizer = (
+        ForceVectorVisualizer(
+            scale_n=FORCE_VECTOR_SCALE_N,
+            window_size=FORCE_WINDOW_SIZE,
+        )
+        if SHOW_FORCE_VECTOR
+        else None
+    )
 
     obs, info = env.reset()
+    if force_visualizer is not None:
+        force_visualizer.update(obs)
     episode_origin = _episode_origin_from_observation(obs)
     env_processor.reset()
     action_processor.reset()
@@ -461,6 +564,9 @@ def main() -> None:
                 obs = env._get_observation()
                 truncated = False
 
+            if force_visualizer is not None:
+                force_visualizer.update(obs)
+
             if episode_step + 1 >= max_episode_steps:
                 truncated = True
 
@@ -522,6 +628,8 @@ def main() -> None:
                     break
 
                 obs, info = env.reset()
+                if force_visualizer is not None:
+                    force_visualizer.update(obs)
                 episode_origin = _episode_origin_from_observation(obs)
                 env_processor.reset()
                 action_processor.reset()
@@ -554,6 +662,11 @@ def main() -> None:
     except Exception:
         logger.exception("Recording failed.")
     finally:
+        if force_visualizer is not None:
+            try:
+                force_visualizer.close()
+            except cv2.error:
+                logger.exception("force visualization window close failed")
         try:
             env.close()
         except Exception:
