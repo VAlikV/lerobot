@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import torch
+from torchvision.transforms import v2
 
 from lerobot.configs.types import FeatureType
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
@@ -11,11 +12,11 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 
-PATH = "outputs/device_assemble/act_stage3"
-DATASET_ID = "local/kuka_device_assemble_stage3"
+PATH = "outputs/device_assemble2/act_abs_stage3"
+DATASET_ID = "local/kuka_device_assemble2_abs_stage3"
 
 # Set this to an already trained checkpoint directory to continue training it.
-# PRETRAINED_PATH: str | None = "outputs/device_assemble/act_stage1_finetune/20000"
+# PRETRAINED_PATH: str | None = "outputs/device_assemble2/act_stage1/70000"
 PRETRAINED_PATH: str | None = None
 
 # True: build normalization from the finetune dataset stats.
@@ -28,12 +29,35 @@ TRAINING_STEPS = 70000
 LOG_FREQ = 100
 SAVE_FREQ = 5000
 
+USE_IMAGE_AUGMENTATIONS = True
+RANDOM_SHIFT = (0.02, 0.02)  # fraction of image width/height
+RANDOM_CROP_PADDING = 8  # pixels; output image size stays unchanged
+
 
 def make_delta_timestamps(delta_indices: list[int] | None, fps: int) -> list[float]:
     if delta_indices is None:
         return [0]
 
     return [i / fps for i in delta_indices]
+
+
+def make_image_transforms(cfg: ACTConfig):
+    if not USE_IMAGE_AUGMENTATIONS or not cfg.image_features:
+        return None
+
+    image_feature = next(iter(cfg.image_features.values()))
+    _, height, width = image_feature.shape
+
+    return v2.Compose(
+        [
+            v2.RandomAffine(degrees=0, translate=RANDOM_SHIFT),
+            v2.RandomCrop(
+                size=(height, width),
+                padding=RANDOM_CROP_PADDING,
+                padding_mode="edge",
+            ),
+        ]
+    )
 
 
 def main():
@@ -84,8 +108,16 @@ def main():
         for k in cfg.image_features
     }
 
+    image_transforms = make_image_transforms(cfg)
+    if image_transforms is not None:
+        print(f"Image augmentations enabled: shift={RANDOM_SHIFT}, crop_padding={RANDOM_CROP_PADDING}px")
+
     # Instantiate the dataset
-    dataset = LeRobotDataset(DATASET_ID, delta_timestamps=delta_timestamps)
+    dataset = LeRobotDataset(
+        DATASET_ID,
+        delta_timestamps=delta_timestamps,
+        image_transforms=image_transforms,
+    )
     # dataset = LeRobotDataset(DATASET_ID)
     print(len(dataset))
 
