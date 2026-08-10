@@ -9,7 +9,9 @@ from lerobot.robots.assembling_sim import AssemblingSim, AssemblingSimCut, Assem
 
 import matplotlib.pyplot as plt
 
-dataset = LeRobotDataset("local/kuka_device_assemble2_stage1_finetune")
+REPO_ID = "local/quest_red_cube_pick_and_place"
+
+dataset = LeRobotDataset(REPO_ID)
 actions = dataset.hf_dataset.select_columns("action")
 
 x = []

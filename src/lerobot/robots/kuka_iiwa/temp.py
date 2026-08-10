@@ -4,7 +4,7 @@ import time
 
 controller = fri.KukaController(
     fri.ControlMode.JOINT_POSITION,
-    "src/lerobot/robots/kuka_iiwa/iiwa.urdf",
+    "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf",
     False,
 )
 

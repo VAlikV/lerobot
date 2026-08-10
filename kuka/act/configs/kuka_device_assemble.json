@@ -6,36 +6,20 @@
 
         "robot": {
             "type": "kuka_iiwa",
-            "urdf_path": "src/lerobot/robots/kuka_iiwa/iiwa.urdf",
+            "urdf_path": "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf",
             "use_task_space": true,
             "gripper_port": "/dev/ttyACM0",
             "gripper_baudrate": 115200,
             "resolution": [224, 224],
-            "reset_pose": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
-            "reset_time_s": 20.0,
+            "reset_pose": [0.638, -0.1, 0.195, 0.0, 1.5708, 0.0, 1.0],
+            "reset_time_s": 5.0,
             "reset_fps": 30,
             "control_hz": 100,
             "camera_timeout_ms": 3000,
             "cameras": {
                 "front": {
                     "type": "opencv",
-                    "index_or_path": 2,
-                    "width": 640,
-                    "height": 480,
-                    "fps": 30,
-                    "warmup_s": 3
-                },
-                "side": {
-                    "type": "opencv",
-                    "index_or_path": 4,
-                    "width": 640,
-                    "height": 480,
-                    "fps": 30,
-                    "warmup_s": 3
-                },
-                "gripper": {
-                    "type": "opencv",
-                    "index_or_path": 6,
+                    "index_or_path": 0,
                     "width": 640,
                     "height": 480,
                     "fps": 30,
@@ -61,8 +45,8 @@
                 "gripper_penalty": -0.02
             },
             "reset": {
-                "fixed_reset_joint_positions": [0.638, -0.1, 0.195, 3.1415, 0.0, 3.1415, 1.0],
-                "reset_time_s": 20.0,
+                "fixed_reset_joint_positions": [0.638, -0.1, 0.195, 0.0, 1.5708, 0.0, 1.0],
+                "reset_time_s": 5.0,
                 "control_time_s": 60.0,
                 "terminate_on_success": true,
                 "randomization_xy": 0.02,

@@ -8,7 +8,7 @@ from ..config import RobotConfig
 class KukaIiwaConfig(RobotConfig):
     """Configuration class for KUKA iiwa robots."""
 
-    urdf_path: str = "robots/iiwa.urdf"
+    urdf_path: str = "robots/iiwa2_gripper.urdf"
     use_task_space: bool = True
 
     gripper_port: str = "/dev/ttyUSB0"
