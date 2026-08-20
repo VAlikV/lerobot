@@ -463,6 +463,9 @@ class KukaIiwaRobotEnv(gym.Env):
         super().reset(seed=seed, options=options)
 
         home = list(self.config.home_tcp)
+        home_gripper_cmd = 2
+        if self.use_gripper and len(home) > 6:
+            home_gripper_cmd = 2 if float(home[6]) > 0 else 0
         rng = self.np_random
         if self.config.randomization_xy > 0:
             r = self.config.randomization_xy
@@ -484,6 +487,7 @@ class KukaIiwaRobotEnv(gym.Env):
         reset_fps = max(1, int(self.config.reset_fps))
         dt_s = 1.0 / float(reset_fps)
         reset_time_s = max(0.0, float(self.config.reset_time_s))
+        move_time_s = min(3.0, float(self.config.reset_time_s))
 
         current_pose = self.robot._get_pose_observation()
         start_xyz = np.array(
@@ -501,26 +505,27 @@ class KukaIiwaRobotEnv(gym.Env):
             start_yaw = float(current_pose["yaw.pos"])
 
         if reset_time_s == 0.0:
-            self._send_target(target_xyz, target_yaw, gripper_cmd=2)
+            self._send_target(target_xyz, target_yaw, gripper_cmd=home_gripper_cmd)
         else:
             reset_start_t = time.perf_counter()
             next_tick_t = reset_start_t
             gripper_sent = False
             while True:
                 now_t = time.perf_counter()
-                alpha = min((now_t - reset_start_t) / reset_time_s, 1.0)
+                alpha = min((now_t - reset_start_t) / move_time_s, 1.0)
+                beta = min((now_t - reset_start_t) / reset_time_s, 1.0)
                 xyz = start_xyz + (target_xyz - start_xyz) * alpha
                 yaw = start_yaw + (target_yaw - start_yaw) * alpha
 
                 self._send_target(
                     xyz.astype(np.float32, copy=False),
                     float(yaw),
-                    gripper_cmd=2 if not gripper_sent else 1,
+                    gripper_cmd=home_gripper_cmd if not gripper_sent else 1,
                     send_gripper=not gripper_sent,
                 )
                 gripper_sent = True
 
-                if alpha >= 1.0:
+                if beta >= 1.0:
                     break
 
                 next_tick_t += dt_s

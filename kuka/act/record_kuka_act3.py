@@ -15,11 +15,11 @@ import multiprocess.resource_tracker
 # multiprocess 0.70.18 expects RLock._recursion_count(), which is absent in
 # CPython 3.12.0. This script does not create multiprocess resources, so the
 # incompatible shutdown finalizer can safely be disabled.
-if not hasattr(threading.RLock(), "_recursion_count"):
-    def _skip_incompatible_resource_tracker_finalizer(_resource_tracker: object) -> None:
-        pass
+# if not hasattr(threading.RLock(), "_recursion_count"):
+#     def _skip_incompatible_resource_tracker_finalizer(_resource_tracker: object) -> None:
+#         pass
 
-    multiprocess.resource_tracker.ResourceTracker.__del__ = _skip_incompatible_resource_tracker_finalizer
+#     multiprocess.resource_tracker.ResourceTracker.__del__ = _skip_incompatible_resource_tracker_finalizer
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 # -- user-tunable -------------------------------------------------------------
-CONFIG_PATH = "kuka/configs/kuka_device_assemble.json"
+CONFIG_PATH = "kuka/act/configs/kuka_device_assemble.json"
 
 # Set POLICY_DIR to None for pure human recording. When set, the policy drives
 # the robot until the gamepad intervention button is held.
@@ -49,7 +49,7 @@ POLICY_DATASET_REPO_ID: str | None = None
 # POLICY_DATASET_REPO_ID: str | None = "local/kuka_device_assemble2_abs_stage3"
 POLICY_DEVICE = "cuda"
 
-REPO_ID = "local/kuka_test_4"
+REPO_ID = "local/kuka_test_1"
 # REPO_ID = "local/kuka_device_assemble2_abs_stage3_part3"
 TASK_DESCRIPTION = "kuka_assemble"
 NUM_EPISODES = 20
@@ -59,6 +59,11 @@ FPS = 30
 N_ACTION_STEPS = 30
 
 USE_TTS = True
+
+# Optional operator-controlled setup phase after each automatic reset. This is
+# configured by kuka/multi_policy/record_policy_dataset.py for atomic policies.
+MANUAL_RESET_CONTROL = False
+RESET_GRIPPER_STATE = "manual"  # "manual", "open", or "closed"
 
 SHOW_FORCE_VECTOR = True
 FORCE_VECTOR_SCALE_N = 50.0
@@ -75,6 +80,12 @@ KUKA_RELATIVE_ACTION_NAMES = [
     "yaw.rel",
     "gripper.pos",
 ]
+
+
+def _log_say_console(text: str) -> None:
+    """Print TTS text explicitly, then pass it to the existing voice helper."""
+    print(f"[TTS] {text}", flush=True)
+    log_say(text)
 
 
 class ForceVectorVisualizer:
@@ -316,6 +327,55 @@ def _teleop_action_to_delta_tensor(
     return torch.tensor(action, dtype=torch.float32)
 
 
+def _manual_reset_phase(
+    env,
+    teleop_device,
+    obs: dict,
+    info: dict,
+    *,
+    use_yaw: bool,
+    use_gripper: bool,
+    dt_s: float,
+) -> tuple[dict, dict]:
+    if not MANUAL_RESET_CONTROL:
+        return obs, info
+    if RESET_GRIPPER_STATE not in ("manual", "open", "closed"):
+        raise ValueError(
+            "RESET_GRIPPER_STATE must be 'manual', 'open', or 'closed'; "
+            f"got {RESET_GRIPPER_STATE!r}"
+        )
+
+    if use_gripper and RESET_GRIPPER_STATE != "manual":
+        initial_action = _neutral_delta_action(env, use_gripper=True)
+        initial_action[-1] = 2.0 if RESET_GRIPPER_STATE == "open" else 0.0
+        obs, _reward, _done, _truncated, info = env.step(initial_action)
+
+    logger.info(
+        "Manual reset phase: use the controller to adjust the robot and gripper; "
+        "press SUCCESS to start recording."
+    )
+    if USE_TTS:
+        _log_say_console("Reset. Press success")
+
+    confirmation_seen = False
+    while True:
+        step_start = time.perf_counter()
+        action = _teleop_action_to_delta_tensor(
+            teleop_device.get_action(),
+            use_yaw=use_yaw,
+            use_gripper=use_gripper,
+        )
+        obs, _reward, _done, _truncated, info = env.step(action)
+        events = teleop_device.get_teleop_events()
+        success_pressed = bool(events.get(TeleopEvents.SUCCESS, False))
+        confirmation_seen = confirmation_seen or success_pressed
+        # Wait for release so SUCCESS is not interpreted as the end of the new episode.
+        if confirmation_seen and not success_pressed:
+            logger.info("Manual reset confirmed. Starting episode recording.")
+            return obs, info
+        precise_sleep(max(dt_s - (time.perf_counter() - step_start), 0.0))
+
+
 def _initial_gripper_cmd(env) -> int:
     gripper_pos = float(env.robot._get_pose_observation()["gripper.pos"])
     return 1 if gripper_pos > 0 else 0
@@ -446,6 +506,24 @@ def main() -> None:
     )
 
     obs, info = env.reset()
+    try:
+        obs, info = _manual_reset_phase(
+            env,
+            teleop_device,
+            obs,
+            info,
+            use_yaw=use_yaw,
+            use_gripper=use_gripper,
+            dt_s=dt_s,
+        )
+    except KeyboardInterrupt:
+        logger.info("Stopped during manual reset.")
+        try:
+            env.close()
+        finally:
+            if teleop_device is not None:
+                teleop_device.disconnect()
+        return
     if force_visualizer is not None:
         force_visualizer.update(obs)
     episode_origin = _episode_origin_from_observation(obs)
@@ -486,7 +564,7 @@ def main() -> None:
     logger.info("Dataset action recording mode: %s", action_recording_mode)
     logger.info("Hold the gamepad intervention button to override the policy.")
     if USE_TTS:
-        log_say(f"Recording episode 1 of {NUM_EPISODES}")
+        _log_say_console("Episode 1")
     if policy_bundle is not None:
         _metadata, policy, _preprocess, _postprocess, _device = policy_bundle
         policy.reset()
@@ -622,7 +700,7 @@ def main() -> None:
                     dataset.clear_episode_buffer()
                     dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
                     if USE_TTS:
-                        log_say(f"Re-recording episode {episode_idx + 1}")
+                        _log_say_console(f"Repeat {episode_idx + 1}")
                 else:
                     logger.info(
                         "Episode %d %s: %d steps, %.1fs, %d intervention steps",
@@ -640,6 +718,15 @@ def main() -> None:
                     break
 
                 obs, info = env.reset()
+                obs, info = _manual_reset_phase(
+                    env,
+                    teleop_device,
+                    obs,
+                    info,
+                    use_yaw=use_yaw,
+                    use_gripper=use_gripper,
+                    dt_s=dt_s,
+                )
                 if force_visualizer is not None:
                     force_visualizer.update(obs)
                 episode_origin = _episode_origin_from_observation(obs)
@@ -663,7 +750,7 @@ def main() -> None:
                 policy_gripper_cmd = gripper_cmd
                 was_intervening = False
                 if USE_TTS:
-                    log_say(f"Recording episode {episode_idx + 1} of {NUM_EPISODES}")
+                    _log_say_console(f"Episode {episode_idx + 1}")
 
             if not (done or truncated):
                 was_intervening = is_intervention
@@ -690,7 +777,7 @@ def main() -> None:
                 logger.exception("teleop disconnect failed")
         try:
             if pending_episode_buffers and USE_TTS:
-                log_say("Robot disconnected. Saving recorded episodes")
+                _log_say_console("Saving")
             _assert_pending_episode_indices(dataset, pending_episode_buffers)
             for idx, episode_buffer in enumerate(pending_episode_buffers, start=1):
                 logger.info(
@@ -699,7 +786,7 @@ def main() -> None:
                     len(pending_episode_buffers),
                 )
                 if USE_TTS:
-                    log_say(f"Saving episode {idx} of {len(pending_episode_buffers)}")
+                    _log_say_console(f"Save {idx}")
                 dataset.save_episode(episode_data=episode_buffer)
             dataset.finalize()
             logger.info("Dataset finalized -> %s", REPO_ID)

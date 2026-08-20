@@ -19,13 +19,30 @@
             "cameras": {
                 "front": {
                     "type": "opencv",
-                    "index_or_path": 0,
+                    "index_or_path": 2,
                     "width": 640,
                     "height": 480,
                     "fps": 30,
                     "warmup_s": 3
+                },
+                "side": {
+                    "type": "opencv",
+                    "index_or_path": 4,
+                    "width": 640,
+                    "height": 480,
+                    "fps": 30,
+                    "warmup_s": 3
+                },
+                "gripper": {
+                    "type": "opencv",
+                    "index_or_path": 6,
+                    "width": 640,
+                    "height": 480,
+                    "fps": 30,
+                    "warmup_s": 5
                 }
             }
+            
         },
 
         "teleop": {
@@ -66,11 +83,11 @@
                     "x": 0.0015,
                     "y": 0.0015,
                     "z": 0.0015,
-                    "yaw": 0.005
+                    "yaw": 0.01
                 },
                 "end_effector_bounds": {
-                    "min": [0.35, -0.35, 0.10, -0.35],
-                    "max": [0.8, 0.25, 0.55, 0.35]
+                    "min": [0.35, -0.35, 0.10, -1.7],
+                    "max": [0.8, 0.25, 0.55, 1.7]
                 }
             }
         }

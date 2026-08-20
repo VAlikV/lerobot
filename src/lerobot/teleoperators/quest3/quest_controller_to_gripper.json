@@ -1,0 +1,14 @@
+{
+  "transform": "controller_to_gripper",
+  "translation_m": {
+    "x": 0.13865,
+    "y": 0.03027,
+    "z": -0.16595
+  },
+  "rotation_quaternion_xyzw": {
+    "x": 0.19571384,
+    "y": -0.04130347,
+    "z":  0.97617491,
+    "w": -0.08409914
+  }
+}

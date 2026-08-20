@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "robot_type": "kuka_iiwa",
+  "config_path": "kuka/act/configs/kuka_device_assemble.json",
+  "points": [
+    {
+      "name": "stage_1",
+      "recorded_at": "2026-08-13T17:57:16.187714+00:00",
+      "pose": {
+        "x.pos": 0.53,
+        "y.pos": -0.27,
+        "z.pos": 0.14,
+        "roll.pos": -2.070349340592308,
+        "pitch.pos": 1.5541960384130848,
+        "yaw.pos": 2.6344139132316964,
+        "gripper.pos": 1.0
+      }
+    },
+    {
+      "name": "stage_2",
+      "recorded_at": "2026-08-13T17:57:38.188911+00:00",
+      "pose": {
+        "x.pos": 0.6148563881983096,
+        "y.pos": -0.01020752588071332,
+        "z.pos": 0.16091667395117112,
+        "roll.pos": 3.0699503655656395,
+        "pitch.pos": 1.5503083941930433,
+        "yaw.pos": 3.050072380076915,
+        "gripper.pos": 0.0
+      }
+    }
+  ]
+}
