@@ -19,13 +19,24 @@ if not hasattr(threading.RLock(), "_recursion_count"):
     multiprocess.resource_tracker.ResourceTracker.__del__ = _skip_incompatible_resource_tracker_finalizer
 
 
-SOURCE_DIR = Path(__file__).parent / "datasets"
-OUTPUT_DIR = Path(__file__).parent / "quest_red_cube_pick_and_place_0.25"
-REPO_ID = "local/quest_red_cube_pick_and_place"
+SOURCE_DIR = Path(__file__).parent / "datasets/red_cube_pick_and_place_2"
+OUTPUT_DIR = Path(__file__).parent / "red_cube_pick_and_place_2"
+REPO_ID = "local/red_cube_pick_and_place_2"
 TASK = "Handheld gripper manipulation"
 CAMERA_NAME = "handheld"
 IMAGE_WIDTH = 224
 IMAGE_HEIGHT = 224
+
+# Invert individual translation and rotation axes during conversion. The
+# signs are applied before smoothing and state integration, keeping actions
+# and observation.state consistent. Inverting X and Y as coordinate axes
+# normally also requires inverting roll and pitch respectively.
+INVERT_X = True
+INVERT_Y = True
+INVERT_Z = False
+INVERT_ROLL = True
+INVERT_PITCH = True
+INVERT_YAW = False
 
 # EMA: filtered = alpha * current + (1 - alpha) * previous.
 # Smaller values smooth more strongly; 1.0 disables smoothing.
@@ -104,6 +115,18 @@ def make_frame(row: dict, task: str, smoother: EpisodeSmoother) -> dict:
         ],
         dtype=np.float64,
     )
+    if INVERT_X:
+        raw_delta[0] *= -1.0
+    if INVERT_Y:
+        raw_delta[1] *= -1.0
+    if INVERT_Z:
+        raw_delta[2] *= -1.0
+    if INVERT_ROLL:
+        raw_delta[3] *= -1.0
+    if INVERT_PITCH:
+        raw_delta[4] *= -1.0
+    if INVERT_YAW:
+        raw_delta[5] *= -1.0
     filtered_delta, filtered_state = smoother.update(raw_delta)
 
     return {

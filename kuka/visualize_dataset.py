@@ -18,8 +18,8 @@ if not hasattr(threading.RLock(), "_recursion_count"):
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
-REPO_ID = "local/quest_red_cube_pick_and_place_0.25"
-EPISODE_INDEX = 0
+REPO_ID = "local/quest_red_cube_pick_and_place_2_0.25"
+EPISODE_INDEX = 1
 OUTPUT_DIR = Path(__file__).parent / "plots"
 
 
