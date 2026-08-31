@@ -43,6 +43,13 @@ class QuestRos2(Teleoperator):
             raise ValueError("controller_offset_quaternion cannot be zero")
         self._offset_rotation = Rotation.from_quat(offset_quaternion / quaternion_norm)
 
+        for parameter_name, alpha in (
+            ("position_filter_alpha", config.position_filter_alpha),
+            ("rotation_filter_alpha", config.rotation_filter_alpha),
+        ):
+            if not np.isfinite(alpha) or not 0.0 < alpha <= 1.0:
+                raise ValueError(f"{parameter_name} must be in the interval (0, 1]")
+
         self._node: Node | None = None
         self._connected = False
 
@@ -165,14 +172,35 @@ class QuestRos2(Teleoperator):
                 + controller_rotation.apply(self._offset_position)
                 - self._offset_position
             )
-            self._position = self._offset_rotation.inv().apply(
+            gripper_position = self._offset_rotation.inv().apply(
                 gripper_displacement_in_controller
             )
             gripper_rotation = (
                 self._offset_rotation.inv() * controller_rotation * self._offset_rotation
             )
-            self._quaternion = gripper_rotation.as_quat()
+            self._update_filtered_pose(gripper_position, gripper_rotation)
             return
+
+    def _update_filtered_pose(
+        self,
+        position: np.ndarray,
+        rotation: Rotation,
+    ) -> None:
+        """Low-pass filter position and orientation without filtering Euler angles."""
+        if self._position is None or self._quaternion is None:
+            self._position = position.copy()
+            self._quaternion = rotation.as_quat()
+            return
+
+        position_alpha = self.config.position_filter_alpha
+        self._position += position_alpha * (position - self._position)
+
+        filtered_rotation = Rotation.from_quat(self._quaternion)
+        rotation_error = filtered_rotation.inv() * rotation
+        filtered_rotation *= Rotation.from_rotvec(
+            self.config.rotation_filter_alpha * rotation_error.as_rotvec()
+        )
+        self._quaternion = filtered_rotation.as_quat()
 
     def _apply_calibration(self, position: np.ndarray, quaternion: np.ndarray) -> None:
         self._initial_position = position.copy()

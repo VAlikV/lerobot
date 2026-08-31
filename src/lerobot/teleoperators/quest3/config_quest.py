@@ -31,6 +31,11 @@ class QuestRos2Config(TeleoperatorConfig):
     position_scale: float = 1.0
     rotation_scale: float = 1.0
 
+    # Коэффициенты low-pass фильтра позы: 1.0 отключает сглаживание,
+    # меньшие значения дают более плавное движение, но увеличивают задержку.
+    position_filter_alpha: float = 0.25
+    rotation_filter_alpha: float = 0.20
+
     control_mode: Literal["delta", "absolute"] = "delta"
 
     # Постоянная поза губок относительно контроллера. Кватернион задаётся
