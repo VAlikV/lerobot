@@ -56,12 +56,11 @@ class KukaLeader(Teleoperator):
 
         self._serial = serial.Serial(self.config.port, self.config.baudrate, timeout=0.02)
         time.sleep(self.config.boot_delay_s)
-        self._serial.reset_input_buffer()
 
         self._reader = SerialFrameReader(self._serial, num_channels=len(self.joint_names))
         self._reader.start()
-        # make sure at least one frame has arrived before we declare success
-        self._reader.latest(max_age_s=2.0)
+
+        self._reader.wait_for_frame(timeout_s=2.0)
 
         self.configure()
 
@@ -97,7 +96,7 @@ class KukaLeader(Teleoperator):
         """
         Interactive sweep-and-record calibration:
         1. Move each joint to a neutral "home" position, press Enter -> records homing offset.
-        2. Slowly move all joints through their full range, press Enter to stop -> records min/max.
+        2. Move all joints through their full range, press Enter to stop -> records min/max.
 
         Populates `self.calibration` with one `MotorCalibration` per joint and saves it to `self.calibration_fpath`.
         """
@@ -159,7 +158,6 @@ class KukaLeader(Teleoperator):
         return angle
 
     # action / feedback
-
     def get_action(self) -> RobotAction:
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")

@@ -82,3 +82,17 @@ class SerialFrameReader(threading.Thread):
 
     def stop(self) -> None:
         self._stop_event.set()
+
+    def wait_for_frame(self, timeout_s: float = 2.0) -> list[int]:
+        deadline = time.monotonic() + timeout_s
+
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._latest is not None:
+                    return self._latest
+
+            time.sleep(0.001)
+
+        raise ConnectionError(
+            f"No valid frame received from the STM32 board within {timeout_s}s."
+        )
