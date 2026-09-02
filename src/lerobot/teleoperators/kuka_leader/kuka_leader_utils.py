@@ -76,7 +76,6 @@ class SerialFrameReader(threading.Thread):
         if max_age_s is not None and age > max_age_s:
             raise ConnectionError(
                 f"Latest STM32 frame is {age:.2f}s old (> {max_age_s}s). "
-                "Check the serial cable / connection / firmware."
             )
         return values
 

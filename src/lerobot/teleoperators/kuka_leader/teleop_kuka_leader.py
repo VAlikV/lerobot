@@ -1,5 +1,8 @@
 """
 Teleoperator for a kinematic clone / leader arm of a Kuka iiwa
+
+Use:
+lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
 """
 
 import logging
@@ -9,6 +12,7 @@ from typing import Any
 import math
 
 import serial
+import threading
 
 from lerobot.motors.motors_bus import MotorCalibration
 from lerobot.processor import RobotAction
@@ -32,6 +36,8 @@ class KukaLeader(Teleoperator):
         self._serial: serial.Serial | None = None
         self._reader: SerialFrameReader | None = None
 
+    # TODO
+    # _get_joint_position and _get_joint_position, switch in get_action
 
     @property
     def action_features(self) -> dict:
@@ -87,11 +93,11 @@ class KukaLeader(Teleoperator):
         # Nothing to configure on a passive read-only board.
         pass
 
-    # software-only calibration
     @property
     def is_calibrated(self) -> bool:
         return set(self.joint_names) <= set(self.calibration)
 
+    # software-only calibration
     def calibrate(self) -> None:
         """
         Interactive sweep-and-record calibration:
@@ -100,41 +106,31 @@ class KukaLeader(Teleoperator):
 
         Populates `self.calibration` with one `MotorCalibration` per joint and saves it to `self.calibration_fpath`.
         """
+
         if not self.is_connected:
             raise RuntimeError(f"{self} must be connected before calibration.")
 
-        print(f"\nCalibrating {self}.")
+        if self.calibration:
+            # Calibration file exists, ask user whether to use it or run new calibration
+            user_input = input(
+                f"Press ENTER to use provided calibration file associated with the id {self.id}, or type 'c' and press ENTER to run calibration: "
+            )
+            if user_input.strip().lower() != "c":
+                logger.info(f"Using calibration file associated with the id {self.id}")
+                return
+
+        logger.info(f"\nRunning calibration of {self}")
+
+        # Home position
         input("Move the arm to the middle of its range of motion and press ENTER...")
         home_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+        print("\nRecorded home positions:")
+        for joint, value in zip(self.joint_names, home_raw, strict=True):
+            print(f"  {joint:<12}: {value}")
 
-        print("Move every joint through its full range of motion.")
-        input("Press Enter to start recording, then move the arm, then press Enter again to stop...")
-
-        mins = list(home_raw)
-        maxes = list(home_raw)
-        recording = True
-
-        # Simple blocking sweep: sample continuously until the user presses Enter again.
-        # (Swap this for a non-blocking key listener if you want live feedback while sweeping.)
-        import threading
-
-        stop_event = threading.Event()
-
-        def _wait_for_enter():
-            input()
-            stop_event.set()
-
-        listener = threading.Thread(target=_wait_for_enter, daemon=True)
-        listener.start()
-
-        while not stop_event.is_set():
-            try:
-                frame = self._reader.latest(max_age_s=self.config.max_frame_age_s)
-            except ConnectionError:
-                continue
-            mins = [min(a, b) for a, b in zip(mins, frame, strict=True)]
-            maxes = [max(a, b) for a, b in zip(maxes, frame, strict=True)]
-            time.sleep(0.01)
+        # Range recording
+        print()
+        mins, maxes = self.record_ranges_of_motion()
 
         self.calibration = {}
         for idx, joint in enumerate(self.joint_names):
@@ -157,7 +153,6 @@ class KukaLeader(Teleoperator):
         angle = delta * (2.0 * math.pi / 4096.0)
         return angle
 
-    # action / feedback
     def get_action(self) -> RobotAction:
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
@@ -171,3 +166,63 @@ class KukaLeader(Teleoperator):
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         # No actuators on this device -- nothing to send.
         return
+
+    # utils
+    def record_ranges_of_motion(self) -> tuple[list[int], list[int]]:
+        """Record min/max raw encoder positions while the user moves the arm."""
+
+        if not self.is_connected:
+            raise RuntimeError(f"{self} must be connected before recording ranges.")
+
+        positions = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+
+        mins = list(positions)
+        maxes = list(positions)
+
+        stop_event = threading.Event()
+
+        def _wait_for_enter():
+            input()
+            stop_event.set()
+
+        listener = threading.Thread(target=_wait_for_enter, daemon=True)
+        listener.start()
+
+        while not stop_event.is_set():
+            try:
+                positions = self._reader.latest(
+                    max_age_s=self.config.max_frame_age_s
+                )
+            except ConnectionError:
+                continue
+
+            mins = [
+                min(current_min, position)
+                for current_min, position in zip(mins, positions, strict=True)
+            ]
+
+            maxes = [
+                max(current_max, position)
+                for current_max, position in zip(maxes, positions, strict=True)
+            ]
+
+            # Clear terminal and redraw table
+            print("\033[2J\033[H", end="")
+
+            print("Move all joints through their full range of motion.")
+            print("Press ENTER to stop recording.\n")
+
+            print(f"{'JOINT':<12} | {'MIN':>6} | {'POS':>6} | {'MAX':>6}")
+            print("-" * 43)
+
+            for i, joint in enumerate(self.joint_names):
+                print(
+                    f"{joint:<12} | "
+                    f"{mins[i]:>6} | "
+                    f"{positions[i]:>6} | "
+                    f"{maxes[i]:>6}"
+                )
+
+            time.sleep(0.02)
+
+        return mins, maxes
