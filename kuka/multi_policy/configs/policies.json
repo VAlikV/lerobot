@@ -1,0 +1,67 @@
+{
+  "pipeline": {
+    "order": ["stage_1", "stage_2"],
+    "device": "cuda",
+    "fps": 30,
+    "max_steps": 30000,
+    "n_action_steps": 15,
+    "reset_time_s": 5.0,
+    "use_tts": false
+  },
+  "policies": {
+    "stage_1": {
+      "start_point": "stage_1",
+      "dataset_repo_id": "local/kuka_multi_policy_stage_1_part_2",
+      "task": "kuka_stage_1",
+      "num_episodes": 30,
+      "episode_time_s": 60,
+      "action_recording_mode": "absolute",
+      "fps": 30,
+      "use_tts": false,
+      "show_force_vector": false,
+      "manual_reset_control": true,
+      "initial_gripper": "manual",
+      "start_randomization": {
+        "xy": 0.02,
+        "z": 0.01,
+        "yaw": 0.03
+      },
+      "dagger": {
+        "model_dir": null,
+        "dataset_repo_id": null,
+        "device": "cuda"
+      },
+      "inference": {
+        "model_dir": "outputs/multi_policy/kuka_multi_policy_stage_1/30000",
+        "dataset_repo_id": "local/kuka_multi_policy_stage_1"
+      }
+    },
+    "stage_2": {
+      "start_point": "stage_2",
+      "dataset_repo_id": "local/kuka_multi_policy_stage_2_fine_tune",
+      "task": "kuka_stage_2",
+      "num_episodes": 20,
+      "episode_time_s": 60,
+      "action_recording_mode": "absolute",
+      "fps": 30,
+      "use_tts": false,
+      "show_force_vector": false,
+      "manual_reset_control": true,
+      "initial_gripper": "manual",
+      "start_randomization": {
+        "xy": 0.02,
+        "z": 0.01,
+        "yaw": 0.02
+      },
+      "dagger": {
+        "model_dir": "outputs/multi_policy/kuka_multi_policy_stage_2.1/20000",
+        "dataset_repo_id": "local/kuka_multi_policy_stage_2",
+        "device": "cuda"
+      },
+      "inference": {
+        "model_dir": "outputs/multi_policy/kuka_multi_policy_stage_2_finetuned/20000",
+        "dataset_repo_id": "local/kuka_multi_policy_stage_2_finetune"
+      }
+    }
+  }
+}

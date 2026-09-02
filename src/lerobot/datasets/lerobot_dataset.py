@@ -1420,8 +1420,20 @@ class LeRobotDataset(torch.utils.data.Dataset):
         - `datasets` relies on a memory mapping from pyarrow (no RAM). It either converts parquet files to a pyarrow cache on disk,
           or loads directly from pyarrow cache.
         """
-        # Convert buffer into HF Dataset
-        ep_dict = {key: episode_buffer[key] for key in self.hf_features}
+        # Convert buffer into HF Dataset. LeRobot feature specs use shape (1,) for scalar
+        # values, while HF `datasets` represents those as `Value`; squeeze the trailing
+        # singleton axis that comes from stacking per-frame arrays like np.array([reward]).
+        ep_dict = {}
+        for key in self.hf_features:
+            value = episode_buffer[key]
+            if (
+                isinstance(value, np.ndarray)
+                and value.ndim > 1
+                and value.shape[-1] == 1
+                and self.features.get(key, {}).get("shape") == (1,)
+            ):
+                value = np.squeeze(value, axis=-1)
+            ep_dict[key] = value
         ep_dataset = datasets.Dataset.from_dict(ep_dict, features=self.hf_features, split="train")
         ep_dataset = embed_images(ep_dataset)
         ep_num_frames = len(ep_dataset)

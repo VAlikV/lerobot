@@ -74,6 +74,11 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> "Teleoperator":
 
         return PS4JoystickTeleop(config)
 
+    elif config.type == "haptic":
+        from .haptic.teleop_haptic import HapticTeleop
+
+        return HapticTeleop(config)
+
     elif config.type == "keyboard_ee":
         from .keyboard.teleop_keyboard import KeyboardEndEffectorTeleop
 
