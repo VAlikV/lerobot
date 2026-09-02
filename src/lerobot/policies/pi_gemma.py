@@ -87,6 +87,11 @@ class PiGemmaRMSNorm(nn.Module):
     Adaptive RMSNorm for PI Gemma (AdaRMS).
     When cond_dim is set, uses cond to modulate scale/shift/gate; otherwise behaves like standard GemmaRMSNorm.
     forward(x, cond=None) returns (output, gate) for use with _gated_residual.
+
+    ``cond`` may be ``(batch_size, cond_dim)`` — one modulation shared by every token — or
+    ``(batch_size, seq_len, cond_dim)``, which lets scale/shift/gate differ per token. The
+    per-token form is what training-time RTC needs to mark the clean action prefix with its
+    own flow timestep (arXiv 2512.05964); it adds no parameters.
     """
 
     def __init__(self, dim: int, eps: float = 1e-6, cond_dim: int | None = None):
@@ -120,8 +125,16 @@ class PiGemmaRMSNorm(nn.Module):
             return normed.type_as(x), None
         if cond.shape[-1] != self.cond_dim:
             raise ValueError(f"Expected cond dim {self.cond_dim}, got {cond.shape[-1]}")
+        if cond.ndim not in (2, 3):
+            raise ValueError(f"cond must be (B, cond_dim) or (B, T, cond_dim), got {tuple(cond.shape)}")
+        if x.ndim == 3 and cond.ndim == 3 and cond.shape[1] != x.shape[1]:
+            raise ValueError(
+                f"Per-token cond has {cond.shape[1]} tokens but x has {x.shape[1]}; shapes must match."
+            )
         modulation = self.dense(cond)
-        if len(x.shape) == 3:
+        if x.ndim == 3 and modulation.ndim == 2:
+            # Scalar-per-sample cond: add the token axis so one modulation broadcasts over
+            # all tokens. A per-token cond already carries that axis and must not gain another.
             modulation = modulation.unsqueeze(1)
         scale, shift, gate = modulation.chunk(3, dim=-1)
         normed = normed * (1 + scale.float()) + shift.float()
@@ -197,6 +210,9 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
 
     def __init__(self, config: GemmaConfig, **kwargs):
         super().__init__(config, **kwargs)
+        # Free parent-allocated layers/norm before replacing to avoid ~2x peak memory.
+        del self.layers
+        del self.norm
         # if not getattr(config, "use_adarms", False):
         #     return
         cond_dim = getattr(config, "adarms_cond_dim", None)
@@ -221,8 +237,9 @@ class PiGemmaModel(GemmaModel):  # type: ignore[misc]
         **kwargs,
     ) -> BaseModelOutputWithPast:
         """
-        adarms_cond (`torch.Tensor` of shape `(batch_size, cond_dim)`, *optional*):
-            Condition for ADARMS.
+        adarms_cond (`torch.Tensor` of shape `(batch_size, cond_dim)` or
+            `(batch_size, seq_len, cond_dim)`, *optional*):
+            Condition for ADARMS. The per-token form drives training-time RTC.
         """
         output_attentions = (
             output_attentions if output_attentions is not None else self.config.output_attentions
@@ -328,6 +345,7 @@ class PiGemmaForCausalLM(GemmaForCausalLM):  # type: ignore[misc]
 
     def __init__(self, config: GemmaConfig, **kwargs):
         super().__init__(config, **kwargs)
+        del self.model
         self.model = PiGemmaModel(config)
 
 
@@ -336,6 +354,7 @@ class PaliGemmaModelWithPiGemma(PaliGemmaModel):
 
     def __init__(self, config):
         super().__init__(config)
+        del self.language_model
         self.language_model = PiGemmaModel(config.text_config)
 
 
@@ -344,6 +363,7 @@ class PaliGemmaForConditionalGenerationWithPiGemma(PaliGemmaForConditionalGenera
 
     def __init__(self, config):
         super().__init__(config)
+        del self.model
         self.model = PaliGemmaModelWithPiGemma(config)
 
     # Make modules available through conditional class for BC

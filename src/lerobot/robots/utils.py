@@ -21,6 +21,8 @@ from lerobot.utils.import_utils import make_device_from_device_class
 from .config import RobotConfig
 from .robot import Robot
 
+logger = logging.getLogger(__name__)
+
 
 def make_robot_from_config(config: RobotConfig) -> Robot:
     # TODO(Steven): Consider just using the make_device_from_device_class for all types
@@ -74,6 +76,14 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
 
         return RC10Follower(config)
 
+    elif config.type == "rebot_b601_follower":
+        from .rebot_b601_follower import RebotB601Follower
+
+        return RebotB601Follower(config)
+    elif config.type == "bi_rebot_b601_follower":
+        from .bi_rebot_b601_follower import BiRebotB601Follower
+
+        return BiRebotB601Follower(config)
     elif config.type == "mock_robot":
         from tests.mocks.mock_robot import MockRobot
 
@@ -116,7 +126,7 @@ def ensure_safe_goal_position(
             }
 
     if warnings_dict:
-        logging.warning(
+        logger.warning(
             "Relative goal position magnitude had to be clamped to be safe.\n"
             f"{pformat(warnings_dict, indent=4)}"
         )

@@ -45,3 +45,5 @@ class GamepadTeleopConfig(TeleoperatorConfig):
     # robots that latch deltas into a target (UR10e) accumulate the spring-back as a real
     # backward move. Default is small enough to be invisible on healthy sticks.
     # deadzone: float = 0.1
+    # Use hidapi instead of pygame for controllers that pygame cannot detect reliably.
+    hidapi_fallback: bool = False

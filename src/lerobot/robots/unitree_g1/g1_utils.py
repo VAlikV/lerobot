@@ -16,9 +16,67 @@
 
 from enum import IntEnum
 
+import numpy as np
+
 # ruff: noqa: N801, N815
 
 NUM_MOTORS = 29
+
+# Joint-order permutation between IsaacLab and Mujoco convention
+ISAACLAB_TO_MUJOCO = np.array(
+    [
+        0,
+        3,
+        6,
+        9,
+        13,
+        17,
+        1,
+        4,
+        7,
+        10,
+        14,
+        18,
+        2,
+        5,
+        8,
+        11,
+        15,
+        19,
+        21,
+        23,
+        25,
+        27,
+        12,
+        16,
+        20,
+        22,
+        24,
+        26,
+        28,
+    ],
+    dtype=np.int32,
+)
+MUJOCO_TO_ISAACLAB = np.argsort(ISAACLAB_TO_MUJOCO).astype(np.int32)
+
+REMOTE_AXES = ("remote.lx", "remote.ly", "remote.rx", "remote.ry")
+REMOTE_BUTTONS = tuple(f"remote.button.{i}" for i in range(16))
+REMOTE_KEYS = REMOTE_AXES + REMOTE_BUTTONS
+
+
+def default_remote_input() -> dict[str, float]:
+    """Return a zeroed-out remote input dict (axes + buttons)."""
+    return dict.fromkeys(REMOTE_KEYS, 0.0)
+
+
+def get_gravity_orientation(quaternion: list[float] | np.ndarray) -> np.ndarray:
+    """Get gravity orientation from quaternion [w, x, y, z]."""
+    qw, qx, qy, qz = quaternion
+    gravity_orientation = np.zeros(3, dtype=np.float32)
+    gravity_orientation[0] = 2 * (-qz * qx + qw * qy)
+    gravity_orientation[1] = -2 * (qz * qy + qw * qx)
+    gravity_orientation[2] = 1 - 2 * (qw * qw + qz * qz)
+    return gravity_orientation
 
 
 class G1_29_JointArmIndex(IntEnum):
@@ -29,7 +87,7 @@ class G1_29_JointArmIndex(IntEnum):
     kLeftElbow = 18
     kLeftWristRoll = 19
     kLeftWristPitch = 20
-    kLeftWristyaw = 21
+    kLeftWristYaw = 21
 
     # Right arm
     kRightShoulderPitch = 22
@@ -69,7 +127,7 @@ class G1_29_JointIndex(IntEnum):
     kLeftElbow = 18
     kLeftWristRoll = 19
     kLeftWristPitch = 20
-    kLeftWristyaw = 21
+    kLeftWristYaw = 21
 
     # Right arm
     kRightShoulderPitch = 22
