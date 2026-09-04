@@ -3,6 +3,8 @@ Teleoperator for a kinematic clone / leader arm of a Kuka iiwa
 
 Use:
 lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
+
+For teleoperation use the script examples/kuka_iiwa/kuka_leader_to_kuka_iiwa_teleop.py"
 """
 
 import logging

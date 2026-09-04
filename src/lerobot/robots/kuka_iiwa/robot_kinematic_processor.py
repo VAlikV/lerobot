@@ -111,6 +111,7 @@ class KukaEEBoundsAndSafety(RobotActionProcessorStep):
         pos = np.array([action["x.pos"], action["y.pos"], action["z.pos"]], dtype=float)
         pos = np.clip(pos, self.end_effector_bounds["min"], self.end_effector_bounds["max"])
 
+        # Check for jumps in position
         if self._last_pos is not None:
             dpos = pos - self._last_pos
             n = float(np.linalg.norm(dpos))

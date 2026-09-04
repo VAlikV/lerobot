@@ -1,3 +1,10 @@
+"""
+Leader arm returns joint angles but follower arm accepts EE position and orientation and gripper state (open/close). So, to work together action proccessor is needed. In `examples/kuka_leader_to_kuka_iiwa_teleop.py`:
+- define `URDF_PATH` to follower's .urdf file
+- define ports in `follower_config` and `leader_config`
+- define `joint_names` for `follower_kinematics_solver` according to according to follower's urdf
+"""
+
 import time
 
 from lerobot.model.kinematics import RobotKinematics
@@ -16,11 +23,11 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
-URDF_PATH = "/home/thallars/Documents/RoboticsLab/lerobot/examples/kuka_iiwa/iiwa2_gripper_fix.urdf"
+URDF_PATH = "iiwa2_gripper_fix.urdf"    # Set path
 
 def main():
-    follower_config = KukaIiwaConfig(port="...", id="my_kuka_iiwa")
-    leader_config = KukaLeaderConfig(port="/dev/ttyACM0", id="my_kuka_clone")
+    follower_config = KukaIiwaConfig(port="...", id="my_kuka_iiwa")                 # Set port
+    leader_config = KukaLeaderConfig(port="/dev/ttyACM0", id="my_kuka_leader")      # Set port
 
     follower = KukaIiwa(follower_config)
     leader = KukaLeader(leader_config)
@@ -28,6 +35,7 @@ def main():
     follower_kinematics_solver = RobotKinematics(
         urdf_path=URDF_PATH,
         target_frame_name="gripper_base_link",
+        # Set joint names according to follower's urdf
         joint_names=[
             "joint_1",
             "joint_2",
