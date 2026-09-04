@@ -1,9 +1,8 @@
-<p align="center">
-  <img alt="LeRobot, Hugging Face Robotics Library" src="./media/readme/lerobot-logo-thumbnail.png" width="100%">
-</p>
+# Kuka iiwa IL with LeRobot
 
-<div align="center">
+## Teleoperation with kinematic clone (leader arm)
 
+### Usage
 [![Tests](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/latest_deps_tests.yml?query=branch%3Amain)
 [![Tests](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml/badge.svg?branch=main)](https://github.com/huggingface/lerobot/actions/workflows/docker_publish.yml?query=branch%3Amain)
 [![Python versions](https://img.shields.io/pypi/pyversions/lerobot)](https://www.python.org/downloads/)
@@ -13,26 +12,24 @@
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.1-ff69b4.svg)](https://github.com/huggingface/lerobot/blob/main/CODE_OF_CONDUCT.md)
 [![Discord](https://img.shields.io/badge/Discord-Join_Us-5865F2?style=flat&logo=discord&logoColor=white)](https://discord.gg/q8Dzzpym3f)
 
-</div>
+Activate `lerobot` environment.
 
-**LeRobot** aims to provide models, datasets, and tools for real-world robotics in PyTorch. The goal is to lower the barrier to entry so that everyone can contribute to and benefit from shared datasets and pretrained models.
-
-🤗 A hardware-agnostic, Python-native interface that standardizes control across diverse platforms, from low-cost arms (SO-100) to humanoids.
-
-🤗 A standardized, scalable LeRobotDataset format (Parquet + MP4 or images) hosted on the Hugging Face Hub, enabling efficient storage, streaming and visualization of massive robotic datasets.
-
-🤗 State-of-the-art policies that have been shown to transfer to the real-world ready for training and deployment.
-
-🤗 Comprehensive support for the open-source ecosystem to democratize physical AI.
-
-## Quick Start
-
-LeRobot can be installed directly from PyPI.
-
-```bash
-pip install lerobot
-lerobot-info
+First, calibrate the leader arm:
 ```
+lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
+```
+
+Leader arm returns joint angles but follower arm accepts EE position and orientation and gripper state (open/close). So, to work together action proccessor is needed. In `examples/kuka_leader_to_kuka_iiwa_teleop.py`:
+- define `URDF_PATH` to follower's .urdf file
+- define ports in `follower_config` and `leader_config`
+- define `joint_names` for `follower_kinematics_solver` according to according to follower's urdf
+
+Run:
+```
+python examples/kuka_iiwa/kuka_leader_to_kuka_iiwa_teleop.py
+```
+
+### Architecture
 
 > [!IMPORTANT]
 > For detailed installation guide, please see the [Installation Documentation](https://huggingface.co/docs/lerobot/installation).
@@ -145,8 +142,13 @@ lerobot-record \
 
 Browse the full list in the [Third-Party Robots & Teleoperators](https://huggingface.co/docs/lerobot/main/third_party_robots) and [Third-Party Cameras & Sensors](https://huggingface.co/docs/lerobot/main/third_party_sensors) documentation.
 
-## Resources
+- **KukaLeader**
 
+Responsible for reading data from stm32 and software-only callibration, implements Teleoperator interface.
+
+Path: src/lerobot/teleoperators/kuka_leader
+
+- **LeaderJointDeltaToFollowerEE** and **KukaEEBoundsAndSafety**
 - **[Documentation](https://huggingface.co/docs/lerobot/index):** The complete guide to tutorials & API.
 - **[Chinese Tutorials: LeRobot+SO-ARM101中文教程-同济子豪兄](https://zihao-ai.feishu.cn/wiki/space/7589642043471924447)** Detailed doc for assembling, teleoperate, dataset, train, deploy. Verified by Seed Studio and 5 global hackathon players.
 - **[Discord](https://discord.gg/q8Dzzpym3f):** Join the `LeRobot` server to discuss with the community.
@@ -189,10 +191,6 @@ If you are referencing our research or the academic paper, please also cite our 
 
 We welcome contributions from everyone in the community! To get started, please read our [CONTRIBUTING.md](https://github.com/huggingface/lerobot/blob/main/CONTRIBUTING.md) guide. Whether you're adding a new feature, improving documentation, or fixing a bug, your help and feedback are invaluable. We're incredibly excited about the future of open-source robotics and can't wait to work with you on what's next—thank you for your support!
 
-<p align="center">
-  <img alt="SO101 Video" src="./media/readme/so100_video.webp" width="640px">
-</p>
+Responsible for data transition from leader to follower format, implements RobotActionProcessorStep interface.
 
-<div align="center">
-<sub>Built by the <a href="https://huggingface.co/lerobot">LeRobot</a> team at <a href="https://huggingface.co">Hugging Face</a> with ❤️</sub>
-</div>
+Path: src/lerobot/robots/kuka_iiwa/robot_kinematic_processor.py

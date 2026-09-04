@@ -115,6 +115,10 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> "Teleoperator":
         from .openarm_mini import OpenArmMini
 
         return OpenArmMini(config)
+    elif config.type == "kuka_leader":
+        from .kuka_leader import KukaLeader
+        
+        return KukaLeader(config)
     elif config.type == "bi_openarm_mini":
         from .bi_openarm_mini import BiOpenArmMini
 
