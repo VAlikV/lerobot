@@ -28,7 +28,14 @@ OUTPUT_PATH = Path("kuka/multi_policy/configs/kuka_policy_start_points.json")
 # If the list is exhausted, names such as start_004 are generated automatically.
 START_POINT_NAMES = [
     "stage_1",
-    "stage_2"
+    "stage_2",
+    "stage_3",
+    "stage_4",
+    "stage_5",
+    "stage_6",
+    "stage_7",
+    "stage_8",
+    "stage_9",
 ]
 
 # Triangle records a point. Circle/Cross (FAILURE) stops the script.

@@ -15,8 +15,22 @@
 # limitations under the License.
 
 import logging
+from typing import TYPE_CHECKING
+
+from lerobot.utils.import_utils import _hidapi_available, _pygame_available, require_package
+from lerobot.utils.keyboard_input import pynput_can_capture
 
 from ..utils import TeleopEvents
+
+if TYPE_CHECKING or _pygame_available:
+    import pygame
+else:
+    pygame = None  # type: ignore[assignment]
+
+if TYPE_CHECKING or _hidapi_available:
+    import hid
+else:
+    hid = None  # type: ignore[assignment]
 
 
 class InputController:
@@ -118,6 +132,15 @@ class KeyboardController(InputController):
 
     def start(self):
         """Start the keyboard listener."""
+        if not pynput_can_capture():
+            logging.warning(
+                "Keyboard control is unavailable in this environment. pynput cannot capture keys "
+                "on Wayland or headless machines, or on macOS without Accessibility / Input "
+                "Monitoring permission. Keyboard motion will be inactive."
+            )
+            self.running = False
+            return
+
         from pynput import keyboard
 
         def on_press(key):
@@ -209,16 +232,17 @@ class KeyboardController(InputController):
 class GamepadController(InputController):
     """Generate motion deltas from gamepad input."""
 
-    def __init__(self, x_step_size=1.0, y_step_size=1.0, z_step_size=1.0, yaw_step_size=1.0, deadzone=0.1):
-        super().__init__(x_step_size, y_step_size, z_step_size, yaw_step_size=yaw_step_size)
+    # def __init__(self, x_step_size=1.0, y_step_size=1.0, z_step_size=1.0, yaw_step_size=1.0, deadzone=0.1):
+    #     super().__init__(x_step_size, y_step_size, z_step_size, yaw_step_size=yaw_step_size)
+    def __init__(self, x_step_size=1.0, y_step_size=1.0, z_step_size=1.0, deadzone=0.1):
+        require_package("pygame", extra="gamepad")
+        super().__init__(x_step_size, y_step_size, z_step_size)
         self.deadzone = deadzone
         self.joystick = None
         self.intervention_flag = False
 
     def start(self):
         """Initialize pygame and the gamepad."""
-        import pygame
-
         pygame.init()
         pygame.joystick.init()
 
@@ -241,8 +265,6 @@ class GamepadController(InputController):
 
     def stop(self):
         """Clean up pygame resources."""
-        import pygame
-
         if pygame.joystick.get_init():
             if self.joystick:
                 self.joystick.quit()
@@ -251,8 +273,6 @@ class GamepadController(InputController):
 
     def update(self):
         """Process pygame events to get fresh gamepad readings."""
-        import pygame
-
         for event in pygame.event.get():
             if event.type == pygame.JOYBUTTONDOWN:
                 if event.button == 2:   # For ps4
@@ -291,8 +311,6 @@ class GamepadController(InputController):
 
     def get_deltas(self, with_yaw: bool = False):
         """Get the current movement deltas from gamepad state."""
-        import pygame
-
         try:
             # Read joystick axes
             # Left stick X and Y (typically axes 0 and 1)
@@ -350,7 +368,9 @@ class GamepadControllerHID(InputController):
             yaw_step_size: Base yaw step size (only used when get_deltas(with_yaw=True))
             deadzone: Joystick deadzone to prevent drift
         """
-        super().__init__(x_step_size, y_step_size, z_step_size, yaw_step_size=yaw_step_size)
+        # super().__init__(x_step_size, y_step_size, z_step_size, yaw_step_size=yaw_step_size)
+        require_package("hidapi", extra="gamepad", import_name="hid")
+        super().__init__(x_step_size, y_step_size, z_step_size)
         self.deadzone = deadzone
         self.device = None
         self.device_info = None
@@ -366,8 +386,6 @@ class GamepadControllerHID(InputController):
 
     def find_device(self):
         """Look for the gamepad device by vendor and product ID."""
-        import hid
-
         devices = hid.enumerate()
         for device in devices:
             device_name = device["product_string"]
@@ -381,8 +399,6 @@ class GamepadControllerHID(InputController):
 
     def start(self):
         """Connect to the gamepad using HIDAPI."""
-        import hid
-
         self.device_info = self.find_device()
         if not self.device_info:
             self.running = False

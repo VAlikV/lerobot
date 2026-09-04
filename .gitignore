@@ -27,7 +27,6 @@ node_modules/
 
 # Lock files
 poetry.lock
-uv.lock
 Pipfile.lock
 
 ### Build & Distribution ###

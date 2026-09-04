@@ -47,9 +47,9 @@ def main():
     parser.add_argument("--teleop_time_s", type=float, default=120.0)
     parser.add_argument("--warmup_time_s", type=float, default=5.0)
     parser.add_argument("--fps", type=int, default=10)
-    parser.add_argument("--ee_step_x", type=float, default=0.002)
-    parser.add_argument("--ee_step_y", type=float, default=0.002)
-    parser.add_argument("--ee_step_z", type=float, default=0.002)
+    parser.add_argument("--ee_step_x", type=float, default=0.001)
+    parser.add_argument("--ee_step_y", type=float, default=0.001)
+    parser.add_argument("--ee_step_z", type=float, default=0.001)
     parser.add_argument("--servo_lookahead_time", type=float, default=0.15)
     parser.add_argument("--servo_gain", type=float, default=100.0)
     # UR10e base frame is rotated relative to the operator at our workstation; flip x/y so
@@ -61,7 +61,7 @@ def main():
     # during the recording phase, and the printed results include a `yaw_bounds` line.
     parser.add_argument("--use_yaw", action="store_true", default=False)
     parser.add_argument("--invert_delta_yaw", action="store_true", default=False)
-    parser.add_argument("--yaw_step", type=float, default=0.01,
+    parser.add_argument("--yaw_step", type=float, default=0.003,
                         help="Yaw step size in radians per unit action (default 0.01)")
     args = parser.parse_args()
 

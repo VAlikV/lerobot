@@ -23,25 +23,34 @@ TODO(alexander-soare):
 import math
 from collections import deque
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import einops
 import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 import torchvision
-from diffusers.schedulers.scheduling_ddim import DDIMScheduler
-from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
-from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
-from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.policies.utils import (
+from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
+from lerobot.utils.import_utils import _diffusers_available, require_package
+
+if TYPE_CHECKING or _diffusers_available:
+    from diffusers.schedulers.scheduling_ddim import DDIMScheduler
+    from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+else:
+    DDIMScheduler = None
+    DDPMScheduler = None
+
+from ..pretrained import PreTrainedPolicy
+from ..utils import (
     get_device_from_parameters,
     get_dtype_from_parameters,
     get_output_shape,
     populate_queues,
 )
-from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
+from .configuration_diffusion import DiffusionConfig
 
 
 class DiffusionPolicy(PreTrainedPolicy):
@@ -65,6 +74,7 @@ class DiffusionPolicy(PreTrainedPolicy):
             dataset_stats: Dataset statistics to be used for normalization. If not passed here, it is expected
                 that they will be passed with a call to `load_state_dict` before the policy is used.
         """
+        require_package("diffusers", extra="diffusion")
         super().__init__(config)
         config.validate_features()
         self.config = config
@@ -92,11 +102,23 @@ class DiffusionPolicy(PreTrainedPolicy):
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
-        """Predict a chunk of actions given environment observations."""
-        # stack n latest observations from the queue
-        batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-        actions = self.diffusion.generate_actions(batch, noise=noise)
+        """Predict a chunk of actions given environment observations.
 
+        Supports two modes:
+        - Online (queues populated via select_action): stacks observations from internal queues.
+        - Offline (empty queues, e.g. dataloader batch): uses the batch directly.
+        """
+        queues_populated = any(len(q) > 0 for q in self._queues.values())
+        if queues_populated:
+            batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
+        else:
+            batch = dict(batch)
+            if self.config.image_features:
+                for key in self.config.image_features:
+                    if batch[key].ndim == 4:
+                        batch[key] = batch[key].unsqueeze(1)
+                batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
+        actions = self.diffusion.generate_actions(batch, noise=noise)
         return actions
 
     @torch.no_grad()
@@ -151,11 +173,13 @@ class DiffusionPolicy(PreTrainedPolicy):
         return loss, None
 
 
-def _make_noise_scheduler(name: str, **kwargs: dict) -> DDPMScheduler | DDIMScheduler:
+def _make_noise_scheduler(name: str, **kwargs: dict):
     """
     Factory for noise scheduler instances of the requested type. All kwargs are passed
     to the scheduler.
     """
+    require_package("diffusers", extra="diffusion")
+
     if name == "DDPM":
         return DDPMScheduler(**kwargs)
     elif name == "DDIM":
@@ -369,7 +393,9 @@ class DiffusionModel(nn.Module):
                     f"{self.config.do_mask_loss_for_padding=}."
                 )
             in_episode_bound = ~batch["action_is_pad"]
-            loss = loss * in_episode_bound.unsqueeze(-1)
+            mask = in_episode_bound.unsqueeze(-1)
+            num_valid = mask.sum() * loss.shape[-1]
+            return (loss * mask).sum() / num_valid.clamp_min(1)
 
         return loss.mean()
 
@@ -702,22 +728,35 @@ class DiffusionConditionalUnet1d(nn.Module):
         else:
             global_feature = timesteps_embed
 
+        use_gc = self.config.gradient_checkpointing and self.training
+
         # Run encoder, keeping track of skip features to pass to the decoder.
         encoder_skip_features: list[Tensor] = []
         for resnet, resnet2, downsample in self.down_modules:
-            x = resnet(x, global_feature)
-            x = resnet2(x, global_feature)
+            if use_gc:
+                x = checkpoint(resnet, x, global_feature, use_reentrant=False)
+                x = checkpoint(resnet2, x, global_feature, use_reentrant=False)
+            else:
+                x = resnet(x, global_feature)
+                x = resnet2(x, global_feature)
             encoder_skip_features.append(x)
             x = downsample(x)
 
         for mid_module in self.mid_modules:
-            x = mid_module(x, global_feature)
+            if use_gc:
+                x = checkpoint(mid_module, x, global_feature, use_reentrant=False)
+            else:
+                x = mid_module(x, global_feature)
 
         # Run decoder, using the skip features from the encoder.
         for resnet, resnet2, upsample in self.up_modules:
             x = torch.cat((x, encoder_skip_features.pop()), dim=1)
-            x = resnet(x, global_feature)
-            x = resnet2(x, global_feature)
+            if use_gc:
+                x = checkpoint(resnet, x, global_feature, use_reentrant=False)
+                x = checkpoint(resnet2, x, global_feature, use_reentrant=False)
+            else:
+                x = resnet(x, global_feature)
+                x = resnet2(x, global_feature)
             x = upsample(x)
 
         x = self.final_conv(x)

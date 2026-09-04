@@ -45,6 +45,8 @@ TARGET_FRAME = "hand_right"
 CONTROL_MODE = "delta"
 POSITION_SCALE = 1.0
 ROTATION_SCALE = 1.0
+POSITION_FILTER_ALPHA = 0.25
+ROTATION_FILTER_ALPHA = 0.20
 
 # Pose of the gripper relative to the tracked Quest controller. Quaternion
 # order is [x, y, z, w]. Leave identity values when no offset is required.
@@ -152,6 +154,8 @@ def main() -> None:
             control_mode=CONTROL_MODE,
             position_scale=POSITION_SCALE,
             rotation_scale=ROTATION_SCALE,
+            position_filter_alpha=POSITION_FILTER_ALPHA,
+            rotation_filter_alpha=ROTATION_FILTER_ALPHA,
             # controller_offset_position=CONTROLLER_OFFSET_POSITION,
             # controller_offset_quaternion=CONTROLLER_OFFSET_QUATERNION,
         )

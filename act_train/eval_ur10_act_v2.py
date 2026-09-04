@@ -57,14 +57,14 @@ logger = logging.getLogger(__name__)
 
 
 # -- user-tunable ---------------------------------------------------------------
-MODEL_DIR = "outputs/act/ur10/pcb_act_3cams_yaw_v2_60eps_30eps2/step_10000"
-DATASET_REPO_ID = "local/pcb_act_3cams_yaw_v2_60eps"   # for dataset stats (normalization)
-CONFIG_PATH = "src/lerobot/rl/ur10_env_3cams_yaw_v2.json"
+MODEL_DIR = "outputs/act/ur10/pcb_act_3cams_yaw_from_hilserl/last"
+DATASET_REPO_ID = "local/pcb_act_3cams_yaw_from_hilserl_absact"   # for dataset stats (normalization)
+CONFIG_PATH = "src/lerobot/rl/ur10_env_3cams_yaw_hilserl.json"
 NUM_EPISODES = 30
 EPISODE_TIME_S = 30      # safety upper bound; user ends earlier via gamepad
 RESET_TIME_S = 10        # total between-episode budget (motion + hold-at-home)
 RESET_SPEED_MPS = 0.1    # auto-reset linear velocity, m/s (matches env.reset's moveL)
-FPS = 30
+FPS = 10
 # -------------------------------------------------------------------------------
 
 
