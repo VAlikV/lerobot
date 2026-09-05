@@ -36,7 +36,6 @@ KUKA_ABSOLUTE_ACTION_NAMES = [
     "gripper.pos",
 ]
 
-
 class KukaIiwa(Robot):
     config_class = KukaIiwaConfig
     name = "kuka_iiwa_follower"
@@ -50,6 +49,7 @@ class KukaIiwa(Robot):
         self._home_action = None
         self._target_position = None
         self._target_rotation = None
+        self._target_joints_position = None
         self._target_lock = threading.Lock()
         self._controller_lock = threading.Lock()
         self._control_stop_event = threading.Event()
@@ -69,6 +69,10 @@ class KukaIiwa(Robot):
             "force.z": float,
             "gripper.pos": float,
         }
+        if (not self.config.use_task_space) and (self.config.use_direct_joint_control):
+            for j_name in self.config.joint_names:
+                features[f"{j_name}.pos"] = float
+
         for cam_name in self.cameras:
             # cam_cfg = self.config.cameras[cam_name]
             features[cam_name] = (self.config.resolution[0], self.config.resolution[1], 3)
@@ -76,15 +80,23 @@ class KukaIiwa(Robot):
 
     @cached_property
     def action_features(self) -> dict:
-        return {
-            "x.pos": float,
-            "y.pos": float,
-            "z.pos": float,
-            "roll.pos": float,
-            "pitch.pos": float,
-            "yaw.pos": float,
-            "gripper.pos": float,
-        }
+
+        if (not self.config.use_task_space) and (self.config.use_direct_joint_control):
+            features = {f"{j_name}.pos": float for j_name in self.config.joint_names}
+
+        else:
+            features = {
+                "x.pos": float,
+                "y.pos": float,
+                "z.pos": float,
+                "roll.pos": float,
+                "pitch.pos": float,
+                "yaw.pos": float,
+            }
+
+        features["gripper.pos"] = float
+
+        return features
 
     @property
     def is_connected(self) -> bool:
@@ -132,7 +144,7 @@ class KukaIiwa(Robot):
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
-        # current_thetta_[0], current_thetta_[1], current_thetta_[2], current_thetta_[3], current_thetta_[4], current_thetta_[5], current_thetta_[6], 
+        # current_thetta_[0], current_thetta_[1], current_thetta_[2], current_thetta_[3], current_thetta_[4], current_thetta_[5], current_thetta_[6],
         # current_pos_[0], current_pos_[1], current_pos_[2],
         # current_rot_(0,0), current_rot_(0,1), current_rot_(0,2),
         # current_rot_(1,0), current_rot_(1,1), current_rot_(1,2),
@@ -200,7 +212,7 @@ class KukaIiwa(Robot):
         ])
         rpy = Rotation.from_matrix(rot_matrix).as_euler("xyz", degrees=False)
 
-        return {
+        obs = {
             "x.pos": float(raw_obs[7]),
             "y.pos": float(raw_obs[8]),
             "z.pos": float(raw_obs[9]),
@@ -213,42 +225,53 @@ class KukaIiwa(Robot):
             "gripper.pos": float(gripper_pos),
         }
 
+        if (not self.config.use_task_space) and (self.config.use_direct_joint_control):
+            for i, j_name in enumerate(self.config.joint_names):
+                obs[f"{j_name}.pos"] = float(np.rad2deg(raw_obs[i]))
+
+        return obs
+
     def _make_home_action(self) -> RobotAction:
-        if self.config.reset_pose is None:
-            return self._get_pose_observation()
+        """Build an absolute home action; joint angles are expressed in degrees."""
+        names = list(self.action_features)
+        pose = self.config.reset_pose
+        if pose is None:
+            observation = self._get_pose_observation()
+            return {name: observation[name] for name in names}
 
-        if len(self.config.reset_pose) not in (6, 7):
+        if len(pose) not in (len(names) - 1, len(names)):
             raise ValueError(
-                "`reset_pose` must contain [x, y, z, roll, pitch, yaw] "
-                "or [x, y, z, roll, pitch, yaw, gripper]."
+                f"`reset_pose` must contain {names[:-1]}, optionally followed by gripper.pos."
             )
-
-        gripper_pos = (
-            float(self.config.reset_pose[6])
-            if len(self.config.reset_pose) == 7
-            else GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED
-        )
-        return {
-            "x.pos": float(self.config.reset_pose[0]),
-            "y.pos": float(self.config.reset_pose[1]),
-            "z.pos": float(self.config.reset_pose[2]),
-            "roll.pos": float(self.config.reset_pose[3]),
-            "pitch.pos": float(self.config.reset_pose[4]),
-            "yaw.pos": float(self.config.reset_pose[5]),
-            "gripper.pos": float(gripper_pos),
-        }
+        values = [float(value) for value in pose]
+        if not np.isfinite(values).all():
+            raise ValueError("`reset_pose` must contain only finite values.")
+        if len(values) == len(names) - 1:
+            values.append(GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED)
+        return dict(zip(names, values, strict=True))
 
     def _set_target_action(self, action: RobotAction) -> None:
-        position = np.array([action["x.pos"], action["y.pos"], action["z.pos"]])
-        rotation = Rotation.from_euler(
-            seq="xyz",
-            angles=[action["roll.pos"], action["pitch.pos"], action["yaw.pos"]],
-            degrees=False,
-        ).as_matrix()
 
-        with self._target_lock:
-            self._target_position = position
-            self._target_rotation = rotation
+        if (not self.config.use_task_space) and (self.config.use_direct_joint_control):
+            joints_position = np.array([action[f"{j_name}.pos"] for j_name in self.config.joint_names])
+
+            if not np.isfinite(joints_position).all():
+                raise ValueError("Joint targets must contain only finite angles in degrees.")
+
+            with self._target_lock:
+                self._target_joints_position = joints_position
+
+        else:
+            position = np.array([action["x.pos"], action["y.pos"], action["z.pos"]])
+            rotation = Rotation.from_euler(
+                seq="xyz",
+                angles=[action["roll.pos"], action["pitch.pos"], action["yaw.pos"]],
+                degrees=False,
+            ).as_matrix()
+
+            with self._target_lock:
+                self._target_position = position
+                self._target_rotation = rotation
 
     def _start_control_thread(self) -> None:
         if self.config.control_hz <= 0:
@@ -280,11 +303,16 @@ class KukaIiwa(Robot):
             with self._target_lock:
                 position = None if self._target_position is None else self._target_position.copy()
                 rotation = None if self._target_rotation is None else self._target_rotation.copy()
+                joints_position = None if self._target_joints_position is None else self._target_joints_position.copy()
 
-            if position is not None and rotation is not None:
+            if (position is not None and rotation is not None) or joints_position is not None:
                 try:
                     with self._controller_lock:
-                        self._controller.set_target(position, rotation)
+                        if (not self.config.use_task_space) and (self.config.use_direct_joint_control):
+                            self._controller.set_target_joints_degrees(joints_position)
+                        else:
+                            self._controller.set_target(position, rotation)
+
                 except Exception:
                     logger.exception("KUKA control loop failed while sending target.")
                     self._control_stop_event.set()
@@ -299,7 +327,11 @@ class KukaIiwa(Robot):
 
 @dataclass
 class KukaIiwaRobotEnvConfig:
-    """Task-space delta-control parameters for the KUKA iiwa gym environment."""
+    """KUKA environment parameters; joint mode is selected by the robot config."""
+
+    # Seven absolute joint angles in degrees, optionally followed by gripper position.
+    # None uses the home action captured by the robot at connection.
+    home_joints: list[float] | None = None
 
     ee_step_sizes: dict[str, float] = field(
         default_factory=lambda: {"x": 0.001, "y": 0.001, "z": 0.001}
@@ -330,6 +362,10 @@ class KukaIiwaRobotEnv(gym.Env):
       - ``[dx, dy, dz, dyaw]`` when ``use_yaw=True``
       - ``[dx, dy, dz, dyaw, gripper_cmd]`` when both are enabled
 
+    With direct joint control, actions are seven absolute angles in degrees,
+    in robot.config.joint_names order, followed by the optional gripper command.
+    TCP bounds, yaw and TCP randomization apply only to task-space control.
+
     The gripper command is discrete: ``0=close``, ``1=stay``, ``2=open``.
     """
 
@@ -337,6 +373,11 @@ class KukaIiwaRobotEnv(gym.Env):
         super().__init__()
         self.robot = robot
         self.config = config
+        self.use_direct_joint_control = (
+            not robot.config.use_task_space and robot.config.use_direct_joint_control
+        )
+        self.joint_action_names = [f"{name}.pos" for name in robot.config.joint_names]
+        self.target_joints: np.ndarray | None = None
 
         self.ee_step = np.array(
             [
@@ -368,6 +409,10 @@ class KukaIiwaRobotEnv(gym.Env):
         if self.use_yaw:
             low.append(-1.0)
             high.append(1.0)
+        if self.use_direct_joint_control:
+            action_dim = len(self.joint_action_names) + int(self.use_gripper)
+            low = [-np.inf] * len(self.joint_action_names)
+            high = [np.inf] * len(self.joint_action_names)
         if self.use_gripper:
             low.append(0.0)
             high.append(2.0)
@@ -416,12 +461,58 @@ class KukaIiwaRobotEnv(gym.Env):
             ],
             dtype=np.float32,
         )
+        if self.use_direct_joint_control:
+            agent_pos = np.concatenate(
+                [agent_pos, np.array([obs[name] for name in self.joint_action_names], dtype=np.float32)]
+            )
         pixels = {
             cam_name: obs[cam_name]
             for cam_name in self.robot.cameras
             if cam_name in obs
         }
         return {"agent_pos": agent_pos, "pixels": pixels}
+
+    def _send_joint_target(
+        self, joints: np.ndarray, gripper_cmd: int = 1, *, send_gripper: bool = True
+    ) -> None:
+        action = dict(zip(self.joint_action_names, map(float, joints), strict=True))
+        if send_gripper and self.use_gripper:
+            gripper = self.robot._get_pose_observation()["gripper.pos"]
+            action["gripper.pos"] = {0: GRIPPER_CLOSED, 2: GRIPPER_OPEN}.get(gripper_cmd, gripper)
+            self.robot.send_action(action)
+        else:
+            self.robot._set_target_action(action)
+
+    def _reset_joints(self) -> None:
+        home = self.config.home_joints
+        if home is None:
+            home_action = self.robot._home_action
+            if home_action is None:
+                home_action = self.robot._make_home_action()
+            home = [home_action[name] for name in self.joint_action_names] + [home_action["gripper.pos"]]
+        count = len(self.joint_action_names)
+        if len(home) not in (count, count + 1) or not np.isfinite(home).all():
+            raise ValueError("home_joints must contain seven finite angles in degrees and optional gripper.")
+        target = np.array(home[:count], dtype=np.float64)
+        gripper_cmd = (2 if home[-1] > 0 else 0) if len(home) == count + 1 else 1
+        obs = self.robot._get_pose_observation()
+        start = np.array([obs[name] for name in self.joint_action_names])
+        duration = max(0.0, float(self.config.reset_time_s))
+        move_duration = min(3.0, duration)
+        dt = 1.0 / max(1, self.config.reset_fps)
+        start_time = time.perf_counter()
+        next_tick = start_time
+        first = True
+        while True:
+            elapsed = time.perf_counter() - start_time
+            alpha = min(elapsed / move_duration, 1.0) if move_duration else 1.0
+            self._send_joint_target(start + (target - start) * alpha, gripper_cmd, send_gripper=first)
+            first = False
+            if elapsed >= duration:
+                break
+            next_tick += dt
+            precise_sleep(max(min(next_tick, start_time + duration) - time.perf_counter(), 0.0))
+        self.target_joints = target
 
     def _send_target(
         self,
@@ -461,6 +552,11 @@ class KukaIiwaRobotEnv(gym.Env):
         options: dict[str, Any] | None = None,
     ) -> tuple[RobotObservation, dict[str, Any]]:
         super().reset(seed=seed, options=options)
+
+        if self.use_direct_joint_control:
+            self._reset_joints()
+            self.current_step = 0
+            return self._get_observation(), {TeleopEvents.IS_INTERVENTION: False}
 
         home = list(self.config.home_tcp)
         home_gripper_cmd = 2
@@ -539,6 +635,17 @@ class KukaIiwaRobotEnv(gym.Env):
 
     def step(self, action) -> tuple[RobotObservation, float, bool, bool, dict[str, Any]]:
         action = np.asarray(action, dtype=np.float32).reshape(-1)
+        if self.use_direct_joint_control:
+            if action.shape != self.action_space.shape or not np.isfinite(action).all():
+                raise ValueError(f"Expected finite joint action of shape {self.action_space.shape}; got {action}")
+            gripper_cmd = int(round(float(action[-1]))) if self.use_gripper else 1
+            if gripper_cmd not in (0, 1, 2):
+                raise ValueError("Gripper command must be 0 (close), 1 (stay), or 2 (open).")
+            self._send_joint_target(action[:len(self.joint_action_names)], gripper_cmd)
+            self.target_joints = action[:len(self.joint_action_names)].copy()
+            self.current_step += 1
+            return self._get_observation(), 0.0, False, False, {TeleopEvents.IS_INTERVENTION: False}
+
         if action.shape[0] < 3:
             raise ValueError(f"KukaIiwaRobotEnv action must have at least 3 values; got {action.shape}")
 
@@ -565,6 +672,11 @@ class KukaIiwaRobotEnv(gym.Env):
         return obs, 0.0, False, False, {TeleopEvents.IS_INTERVENTION: False}
 
     def get_recording_action_features(self, mode: str = "delta") -> dict:
+        if self.use_direct_joint_control:
+            names = self.joint_action_names + (["gripper.pos"] if mode == "absolute" else [])
+            if mode != "absolute" and self.use_gripper:
+                names.append("gripper_cmd")
+            return {"dtype": "float32", "shape": (len(names),), "names": names}
         if mode != "absolute":
             return {"dtype": "float32", "shape": self.action_space.shape, "names": None}
         return {
@@ -576,6 +688,13 @@ class KukaIiwaRobotEnv(gym.Env):
     def get_recording_action(self, mode: str = "delta") -> np.ndarray:
         if mode != "absolute":
             raise ValueError(f"KukaIiwaRobotEnv only exposes explicit recording action for absolute mode; got {mode!r}")
+
+        if self.use_direct_joint_control:
+            obs = self.robot._get_pose_observation()
+            joints = self.target_joints
+            if joints is None:
+                joints = [obs[name] for name in self.joint_action_names]
+            return np.array([*joints, obs["gripper.pos"]], dtype=np.float32)
 
         if self.target_xyz is None:
             obs = self.robot._get_pose_observation()

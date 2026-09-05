@@ -25,7 +25,6 @@ from .kuka_leader_utils import SerialFrameReader
 
 logger = logging.getLogger(__name__)
 
-
 class KukaLeader(Teleoperator):
 
     config_class = KukaLeaderConfig

@@ -457,6 +457,11 @@ def make_robot_env(cfg: HILSerlRobotEnvConfig) -> tuple[gym.Env, Any]:
             fixed_pitch=home_tcp[4] if len(home_tcp) > 4 else 0.0,
             fixed_yaw=home_tcp[5] if len(home_tcp) > 5 else 0.0,
             home_tcp=home_tcp,
+            home_joints=(
+                list(reset_cfg.fixed_reset_joint_positions)
+                if robot.config.use_direct_joint_control and not robot.config.use_task_space and reset_cfg
+                else None
+            ),
             reset_time_s=reset_cfg.reset_time_s if reset_cfg else 5.0,
             reset_fps=getattr(cfg.robot, "reset_fps", 30),
             use_gripper=use_gripper,
