@@ -23,18 +23,20 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
-URDF_PATH = "iiwa2_gripper_fix.urdf"    # Set path
+URDF_PATH = "/home/thallars/Documents/RoboticsLab/lerobot/examples/kuka_iiwa/iiwa2_gripper_fix.urdf"    # Set path
 
 def main():
-    follower_config = KukaIiwaConfig(port="...", id="my_kuka_iiwa")                 # Set port
-    leader_config = KukaLeaderConfig(port="/dev/ttyACM0", id="my_kuka_leader")      # Set port
+    # Set port
+    follower_config = KukaIiwaConfig(port="...", id="my_kuka_iiwa", use_degrees=False)
+    # Set port
+    leader_config = KukaLeaderConfig(port="/dev/ttyACM0", id="my_kuka_leader")
 
     follower = KukaIiwa(follower_config)
     leader = KukaLeader(leader_config)
 
     follower_kinematics_solver = RobotKinematics(
         urdf_path=URDF_PATH,
-        target_frame_name="gripper_base_link",
+        target_frame_name="gripper_base_link",      # Set target frame link
         # Set joint names according to follower's urdf
         joint_names=[
             "joint_1",
@@ -63,10 +65,10 @@ def main():
                 euler_order="xyz",
                 use_latched_reference=True,
             ),
-            # KukaEEBoundsAndSafety(
-            #     end_effector_bounds={"min": [-1.0, -1.0, 0.0], "max": [1.0, 1.0, 1.5]},
-            #     max_ee_step_m=0.05,
-            # ),
+            KukaEEBoundsAndSafety(
+                end_effector_bounds={"min": None, "max": None},
+                max_ee_step_m=0.05,
+            ),
         ],
         to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,

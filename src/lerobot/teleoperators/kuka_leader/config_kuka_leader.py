@@ -24,6 +24,9 @@ class KukaLeaderConfig(TeleoperatorConfig):
 
     baudrate: int = 115_200
 
+    # Whether to use degrees for angles; radians othervise 
+    use_degrees: bool = True
+
     # Seconds to wait after opening the port before trusting incoming data
     boot_delay_s: float = 2.0
 

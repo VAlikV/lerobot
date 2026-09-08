@@ -151,7 +151,10 @@ class KukaLeader(Teleoperator):
         if cal is None:
             raise RuntimeError(f"No calibration for joint {joint}")
         delta = raw - cal.homing_offset
-        angle = delta * (2.0 * math.pi / 4096.0)
+        if self.config.use_degrees: 
+            angle = delta * (360.0 / 4096.0)
+        else:
+            angle = delta * (2.0 * math.pi / 4096.0)
         return angle
 
     def get_action(self) -> RobotAction:
