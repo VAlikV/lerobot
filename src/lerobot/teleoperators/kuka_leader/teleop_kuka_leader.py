@@ -37,8 +37,9 @@ class KukaLeader(Teleoperator):
         self._serial: serial.Serial | None = None
         self._reader: SerialFrameReader | None = None
 
-    # TODO
-    # _get_joint_position and _get_joint_position, switch in get_action
+        # For full revolute joint handle
+        self._last_raw: list[int] | None = None  # raw values as of the last get_action() call
+        self._continuous_counts: dict[str, float] = {}   # accumulated unwrapped raw counts
 
     @property
     def action_features(self) -> dict:
@@ -70,9 +71,11 @@ class KukaLeader(Teleoperator):
         self._reader.wait_for_frame(timeout_s=2.0)
 
         self.configure()
-
         if calibrate and not self.is_calibrated:
             self.calibrate()
+
+        self._last_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+        self._continuous_counts = dict.fromkeys(self.config.continuous_joints, 0.0)
 
         logger.info(f"{self} connected.")
 
@@ -150,22 +153,41 @@ class KukaLeader(Teleoperator):
         cal = self.calibration.get(joint)
         if cal is None:
             raise RuntimeError(f"No calibration for joint {joint}")
+ 
+        if joint in self.config.continuous_joints:
+            counts = self._continuous_counts.get(joint, 0.0)
+            if self.config.use_degrees:
+                return counts * (360.0 / 4096.0)
+            return counts * (2.0 * math.pi / 4096.0)
+ 
         delta = raw - cal.homing_offset
-        if self.config.use_degrees: 
-            angle = delta * (360.0 / 4096.0)
-        else:
-            angle = delta * (2.0 * math.pi / 4096.0)
-        return angle
+        if self.config.use_degrees:
+            return delta * (360.0 / 4096.0)
+        return delta * (2.0 * math.pi / 4096.0)
+
 
     def get_action(self) -> RobotAction:
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
+ 
+        raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+ 
+        for idx, joint in enumerate(self.joint_names):
+            if joint in self.config.continuous_joints:
+                step = (raw[idx] - self._last_raw[idx] + 2048) % 4096 - 2048
 
-        raw_values = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+                if abs(step) > 2000:
+                    logger.warning(f"{joint}: raw step {step} is close to the +/-2048 unwrap ")
+ 
+                self._continuous_counts[joint] = self._continuous_counts.get(joint, 0.0) + step
+ 
+        self._last_raw = raw
+ 
         return {
-            f"{joint}.pos": self._encoder_to_joint_angle(joint, raw_values[idx])
+            f"{joint}.pos": self._encoder_to_joint_angle(joint, raw[idx])
             for idx, joint in enumerate(self.joint_names)
         }
+
 
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         # No actuators on this device -- nothing to send.

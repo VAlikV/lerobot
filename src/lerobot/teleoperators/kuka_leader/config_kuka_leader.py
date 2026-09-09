@@ -21,6 +21,7 @@ class KukaLeaderConfig(TeleoperatorConfig):
 
     # Names of the joints
     joint_names: list[str] = field(default_factory=lambda: list(DEFAULT_JOINT_NAMES))
+    continuous_joints: tuple[str, ...] = ("joint_7",)
 
     baudrate: int = 115_200
 
@@ -32,9 +33,6 @@ class KukaLeaderConfig(TeleoperatorConfig):
 
     # Max age (seconds) of the latest frame
     max_frame_age_s: float = 0.5
-
-    # TODO
-    # Enum: joint, cartesian
 
     def __post_init__(self):
         if len(self.joint_names) > 8:

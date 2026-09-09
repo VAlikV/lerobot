@@ -23,7 +23,17 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
-URDF_PATH = "/home/thallars/Documents/RoboticsLab/lerobot/examples/kuka_iiwa/iiwa2_gripper_fix.urdf"    # Set path
+URDF_PATH = "iiwa2_gripper.urdf"    # Set path
+FOLLOWER_JOINT_NAMES = [    # Joint names according to follower's urdf
+    "joint_1",
+    "joint_2",
+    "joint_3",
+    "joint_4",
+    "joint_5",
+    "joint_6",
+    "joint_7",
+]
+
 
 def main():
     # Set port
@@ -37,31 +47,14 @@ def main():
     follower_kinematics_solver = RobotKinematics(
         urdf_path=URDF_PATH,
         target_frame_name="gripper_base_link",      # Set target frame link
-        # Set joint names according to follower's urdf
-        joint_names=[
-            "joint_1",
-            "joint_2",
-            "joint_3",
-            "joint_4",
-            "joint_5",
-            "joint_6",
-            "joint_7",
-        ],
+        joint_names=FOLLOWER_JOINT_NAMES,
     )
 
     leader_to_follower_ee = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
         steps=[
             LeaderJointDeltaToFollowerEE(
                 kinematics=follower_kinematics_solver,
-                leader_motor_names=[
-                    "joint_1",
-                    "joint_2",
-                    "joint_3",
-                    "joint_4",
-                    "joint_5",
-                    "joint_6",
-                    "joint_7",
-                ],
+                leader_motor_names=leader.joint_names,
                 euler_order="xyz",
                 use_latched_reference=True,
             ),
@@ -79,25 +72,37 @@ def main():
 
     #init_rerun(session_name="kuka_leader_to_kuka_iiwa_teleop")
 
-    print("Starting teleop loop...")
-    while True:
-        t0 = time.perf_counter()
+    print("Starting cartesian-space teleoperation...")
 
-        # Get robot observation
-        follower_obs = follower.get_observation()
+    try:
+        while True:
+            t0 = time.perf_counter()
 
-        # Get teleop observation
-        leader_action = leader.get_action()
+            # Get robot observation
+            follower_obs = follower.get_observation()
 
-        # teleop joints -> robot EE action
-        follower_action = leader_to_follower_ee((leader_action, follower_obs))
+            # Get teleop observation
+            leader_action = leader.get_action()
 
-        # Send action to robot
-        _ = follower.send_action(follower_action)
+            # teleop joints -> robot EE action
+            follower_action = leader_to_follower_ee((leader_action, follower_obs))
 
-        #log_rerun_data(observation=follower_obs, action=follower_action)
+            # Send action to robot
+            _ = follower.send_action(follower_action)
 
-        precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+            #log_rerun_data(observation=follower_obs, action=follower_action)
+
+            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
+
+    except KeyboardInterrupt:
+        print("\nStopping teleoperation...")
+
+    finally:
+        if leader.is_connected:
+            leader.disconnect()
+
+        if follower.is_connected:
+            follower.disconnect()
 
 
 if __name__ == "__main__":

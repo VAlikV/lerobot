@@ -9,14 +9,20 @@ First, calibrate the leader arm:
 lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
 ```
 
-Leader arm returns joint angles but follower arm accepts EE position and orientation and gripper state (open/close). So, to work together action proccessor is needed. In `examples/kuka_leader_to_kuka_iiwa_teleop.py`:
+**Cartesian Space:**
+Leader arm returns joint angles but follower arm accepts EE position and orientation and gripper state (open/close). So, to work together action proccessor is needed. In `examples/сcartesian_teleop.py`:
 - define `URDF_PATH` to follower's .urdf file
 - define ports in `follower_config` and `leader_config`
-- define `joint_names` for `follower_kinematics_solver` according to according to follower's urdf
+- define `FOLLOWER_JOINT_NAMES` according to according to follower's urdf
 
 Run:
 ```
-python examples/kuka_iiwa/kuka_leader_to_kuka_iiwa_teleop.py
+python examples/kuka_iiwa/cartesian_teleop.py
+```
+
+**Joint Space:**
+```
+python examples/kuka_iiwa/joint_teleop.py
 ```
 
 ### Architecture
