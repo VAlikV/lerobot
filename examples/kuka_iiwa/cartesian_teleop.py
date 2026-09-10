@@ -23,7 +23,7 @@ from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
 FPS = 30
-URDF_PATH = "iiwa2_gripper.urdf"    # Set path
+URDF_PATH = "/home/thallars/Documents/RoboticsLab/lerobot/examples/kuka_iiwa/iiwa2_gripper_fix.urdf"    # Set path
 FOLLOWER_JOINT_NAMES = [    # Joint names according to follower's urdf
     "joint_1",
     "joint_2",

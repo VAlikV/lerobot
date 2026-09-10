@@ -21,7 +21,6 @@ class KukaLeaderConfig(TeleoperatorConfig):
 
     # Names of the joints
     joint_names: list[str] = field(default_factory=lambda: list(DEFAULT_JOINT_NAMES))
-    continuous_joints: tuple[str, ...] = ("joint_7",)
 
     baudrate: int = 115_200
 

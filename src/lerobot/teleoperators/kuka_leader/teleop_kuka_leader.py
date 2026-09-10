@@ -4,7 +4,7 @@ Teleoperator for a kinematic clone / leader arm of a Kuka iiwa
 Use:
 lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
 
-For teleoperation use the script examples/kuka_iiwa/kuka_leader_to_kuka_iiwa_teleop.py"
+For teleoperation use the scripts in examples/kuka_iiwa/"
 """
 
 import logging
@@ -36,10 +36,6 @@ class KukaLeader(Teleoperator):
         self.joint_names = list(config.joint_names)
         self._serial: serial.Serial | None = None
         self._reader: SerialFrameReader | None = None
-
-        # For full revolute joint handle
-        self._last_raw: list[int] | None = None  # raw values as of the last get_action() call
-        self._continuous_counts: dict[str, float] = {}   # accumulated unwrapped raw counts
 
     @property
     def action_features(self) -> dict:
@@ -73,9 +69,6 @@ class KukaLeader(Teleoperator):
         self.configure()
         if calibrate and not self.is_calibrated:
             self.calibrate()
-
-        self._last_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
-        self._continuous_counts = dict.fromkeys(self.config.continuous_joints, 0.0)
 
         logger.info(f"{self} connected.")
 
@@ -153,35 +146,16 @@ class KukaLeader(Teleoperator):
         cal = self.calibration.get(joint)
         if cal is None:
             raise RuntimeError(f"No calibration for joint {joint}")
- 
-        if joint in self.config.continuous_joints:
-            counts = self._continuous_counts.get(joint, 0.0)
-            if self.config.use_degrees:
-                return counts * (360.0 / 4096.0)
-            return counts * (2.0 * math.pi / 4096.0)
- 
-        delta = raw - cal.homing_offset
-        if self.config.use_degrees:
-            return delta * (360.0 / 4096.0)
-        return delta * (2.0 * math.pi / 4096.0)
 
+        delta = ((raw - cal.homing_offset + 2048) % 4096) - 2048
+
+        return delta / self._counts_per_unit()
 
     def get_action(self) -> RobotAction:
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
  
         raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
- 
-        for idx, joint in enumerate(self.joint_names):
-            if joint in self.config.continuous_joints:
-                step = (raw[idx] - self._last_raw[idx] + 2048) % 4096 - 2048
-
-                if abs(step) > 2000:
-                    logger.warning(f"{joint}: raw step {step} is close to the +/-2048 unwrap ")
- 
-                self._continuous_counts[joint] = self._continuous_counts.get(joint, 0.0) + step
- 
-        self._last_raw = raw
  
         return {
             f"{joint}.pos": self._encoder_to_joint_angle(joint, raw[idx])
@@ -192,6 +166,58 @@ class KukaLeader(Teleoperator):
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         # No actuators on this device -- nothing to send.
         return
+
+    def send_goal_position(self, goal: RobotAction, hold_s: float = 3.0, tolerance_counts: int = 50) -> None:
+
+        if not self.is_connected:
+            raise RuntimeError(f"{self} is not connected.")
+        if not self.is_calibrated:
+            raise RuntimeError(f"{self} must be calibrated before sending a goal position.")
+
+        missing = [joint for joint in self.joint_names if f"{joint}.pos" not in goal]
+        if missing:
+            raise ValueError(f"Missing target position(s) for joint(s): {missing}")
+
+        raw_targets = [
+            self._joint_angle_to_encoder(joint, goal[f"{joint}.pos"])
+            for joint in self.joint_names
+        ]
+
+        for idx, joint in enumerate(self.joint_names):
+            cal = self.calibration[joint]
+            if not (cal.range_min <= raw_targets[idx] <= cal.range_max):
+                raise ValueError(
+                    f"Target for {joint} ({raw_targets[idx]} ticks) is outside the "
+                    f"calibrated range [{cal.range_min}, {cal.range_max}]."
+                )
+
+        logger.info(
+            f"{self}: sending goal position "
+            f"{dict(zip(self.joint_names, raw_targets, strict=True))}"
+        )
+        self._reader.send(raw_targets)
+
+        if hold_s > 0:
+            time.sleep(hold_s)
+
+        try:
+            actual_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
+        except ConnectionError:
+            logger.warning(
+                f"{self}: no fresh frame after sending the goal position; "
+                f"cannot verify it was reached."
+            )
+            return
+
+        for idx, joint in enumerate(self.joint_names):
+            deviation = abs(
+                ((actual_raw[idx] - raw_targets[idx] + 2048) % 4096) - 2048
+            )
+            if deviation > tolerance_counts:
+                logger.warning(
+                    f"{joint}: raw position {actual_raw[idx]} differs from commanded "
+                    f"target {raw_targets[idx]} by {deviation} counts after {hold_s}s."
+                )
 
     # utils
     def record_ranges_of_motion(self) -> tuple[list[int], list[int]]:
@@ -252,3 +278,15 @@ class KukaLeader(Teleoperator):
             time.sleep(0.02)
 
         return mins, maxes
+
+    def _counts_per_unit(self) -> float:
+        full_turn_units = 360.0 if self.config.use_degrees else 2.0 * math.pi
+        return 4096.0 / full_turn_units
+
+    def _joint_angle_to_encoder(self, joint: str, angle: float) -> int:
+        cal = self.calibration.get(joint)
+        if cal is None:
+            raise RuntimeError(f"No calibration for joint {joint}")
+
+        raw = cal.homing_offset + angle * self._counts_per_unit()
+        return int(round(raw)) % 4096

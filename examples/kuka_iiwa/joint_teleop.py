@@ -44,9 +44,17 @@ def main():
     follower.connect()
     leader.connect()
 
-    print("Starting joint-space teleoperation...")
 
     try:
+        print("Reading follower home position...")
+        follower_obs = follower.get_observation()
+
+        print("Syncing leader to follower home position...")
+        leader.send_goal_position(follower_obs, hold_s=3.0, tolerance_counts=50)
+
+        print("Leader synced to follower home position.")
+        print("Starting joint-space teleoperation...")
+
         while True:
             t0 = time.perf_counter()
 
@@ -55,8 +63,7 @@ def main():
 
             # Directly send joint positions to follower
             follower_action = {
-                joint: leader_action[f"{joint}.pos"]
-                for joint in JOINT_NAMES
+                joint: leader_action[f"{joint}.pos"] for joint in JOINT_NAMES
             }
 
             # If leader provides a gripper command, forward it too.
@@ -66,7 +73,7 @@ def main():
             # Send absolute joint positions to KUKA iiwa
             _ = follower.send_action(follower_action)
 
-            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0,))
+            precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
 
     except KeyboardInterrupt:
         print("\nStopping teleoperation...")
