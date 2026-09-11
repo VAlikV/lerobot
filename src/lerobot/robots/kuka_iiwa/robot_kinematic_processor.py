@@ -16,10 +16,6 @@ from scipy.spatial.transform import Rotation
 
 logger = logging.getLogger(__name__)
 
-GRIPPER_OPEN = 1.0
-GRIPPER_CLOSED = -1.0
-
-
 def _pose_dict_to_transform(pose: dict, euler_order: str = "xyz") -> np.ndarray:
     # Builds a 4x4 transform from a {'x.pos', 'y.pos', 'z.pos', 'roll.pos', 'pitch.pos', 'yaw.pos'} dict.
     t = np.eye(4, dtype=float)
@@ -41,7 +37,6 @@ class LeaderJointDeltaToFollowerEE(RobotActionProcessorStep):
     kinematics: RobotKinematics
     leader_motor_names: list[str]
     euler_order: str = "xyz"
-    gripper_open_threshold: float = 0.0
     use_latched_reference: bool = True # If True, latch reference on enable; if False, always use current pose
 
     _q_leader_ref: np.ndarray | None = field(default=None, init=False, repr=False)
@@ -58,7 +53,6 @@ class LeaderJointDeltaToFollowerEE(RobotActionProcessorStep):
         q_leader = np.array(
             [float(action.pop(f"{name}.pos")) for name in self.leader_motor_names], dtype=float
         )
-        gripper_raw = float(action.pop("gripper.pos"))
 
         if self.use_latched_reference:
             # Latch once and keep reusing it
@@ -87,7 +81,6 @@ class LeaderJointDeltaToFollowerEE(RobotActionProcessorStep):
         action["roll.pos"] = float(rpy[0])
         action["pitch.pos"] = float(rpy[1])
         action["yaw.pos"] = float(rpy[2])
-        action["gripper.pos"] = GRIPPER_OPEN if gripper_raw > self.gripper_open_threshold else GRIPPER_CLOSED
 
         return action
 
@@ -149,6 +142,37 @@ class KukaEEBoundsAndSafety(RobotActionProcessorStep):
     def reset(self):
         self._last_pos = None
 
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@ProcessorStepRegistry.register("gripper_position_to_discrete")
+@dataclass
+class GripperPositionToDiscrete(RobotActionProcessorStep):
+ 
+    threshold: float = 0.0
+    reverse: bool = False
+    GRIPPER_OPEN: float = 1.0
+    GRIPPER_CLOSED: float = -1.0
+ 
+    def action(self, action: RobotAction) -> RobotAction:
+        gripper_raw = float(action.pop("gripper.pos"))
+
+        is_open = gripper_raw > self.threshold
+
+        if self.reverse:
+            is_open = not is_open
+
+        action["gripper.pos"] = (
+            self.GRIPPER_OPEN if is_open else self.GRIPPER_CLOSED
+        )
+        return action
+ 
+    def reset(self):
+        pass
+ 
     def transform_features(
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:

@@ -109,4 +109,15 @@ class SerialFrameReader(threading.Thread):
             f"No valid frame received from the STM32 board within {timeout_s}s."
         )
 
-м
+    def send(self, values: list[int]) -> None:
+        """
+        Send command frame to STM32 board, e.g. b"[1023, 2048, ..., 0]\n".
+        """
+        if len(values) != self._num_channels:
+            raise ValueError(
+                f"Expected {self._num_channels} values, got {len(values)}: {values}"
+            )
+        frame = "[" + " ".join(str(int(v)) for v in values) + "]\n"
+        with self._write_lock:
+            self._ser.write(frame.encode("ascii"))
+            self._ser.flush()
