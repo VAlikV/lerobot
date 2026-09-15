@@ -3,12 +3,13 @@ Low-level serial reading helper for the STM32 encoder board.
 
 The STM32 continuously streams ASCII frames like:
 
-    "1023, 2048, 512, 4095, 10, 3000, 999, 0\n"
+    "[1023, 2048, 512, 4095, 10, 3000, 999, 0]\n"
 """
 
 import logging
 import threading
 import time
+import ast
 
 import serial
 
@@ -25,6 +26,7 @@ class SerialFrameReader(threading.Thread):
         self._ser = ser
         self._num_channels = num_channels
         self._lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._latest: list[int] | None = None
         self._latest_ts: float = 0.0
         self._stop_event = threading.Event()
@@ -57,14 +59,25 @@ class SerialFrameReader(threading.Thread):
     def _parse_frame(self, line: bytes) -> list[int] | None:
         if not line:
             return None
+
         try:
-            values = [int(p) for p in line.decode("ascii").split(",")]
-        except (UnicodeDecodeError, ValueError):
+            values = ast.literal_eval(line.decode("ascii"))
+        except (UnicodeDecodeError, ValueError, SyntaxError):
             logger.debug(f"Dropping malformed frame from STM32: {line!r}")
             return None
+
+        if not isinstance(values, list):
+            logger.debug(f"Dropping malformed frame from STM32: {line!r}")
+            return None
+
+        if not all(isinstance(v, int) for v in values):
+            logger.debug(f"Dropping frame with non-integer values: {line!r}")
+            return None
+
         if len(values) != self._num_channels:
             logger.debug(f"Dropping frame with wrong channel count: {line!r}")
             return None
+
         return values
 
     def latest(self, max_age_s: float | None = None) -> list[int]:
@@ -95,3 +108,16 @@ class SerialFrameReader(threading.Thread):
         raise ConnectionError(
             f"No valid frame received from the STM32 board within {timeout_s}s."
         )
+
+    def send(self, values: list[int]) -> None:
+        """
+        Send command frame to STM32 board, e.g. b"[1023, 2048, ..., 0]\n".
+        """
+        if len(values) != self._num_channels:
+            raise ValueError(
+                f"Expected {self._num_channels} values, got {len(values)}: {values}"
+            )
+        frame = "[" + " ".join(str(int(v)) for v in values) + "]\n"
+        with self._write_lock:
+            self._ser.write(frame.encode("ascii"))
+            self._ser.flush()
