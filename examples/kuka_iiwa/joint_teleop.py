@@ -26,7 +26,7 @@ from lerobot.robots.kuka_iiwa.robot_kinematic_processor import (
 
 # USER CONFIGURATION
 
-FPS = 30
+FPS = 50
 
 # Follower robot serial port
 FOLLOWER_PORT = "..."
@@ -42,17 +42,20 @@ GRIPPER_THRESHOLD = 26.0
 def main():
 
     follower_config = KukaIiwaConfig(
-        port=FOLLOWER_PORT,
+        # port=FOLLOWER_PORT,
+        gripper_port=None,
         id="my_kuka_iiwa",
+        urdf_path = "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf",
         use_task_space=False,
         use_direct_joint_control=True,
-        use_degrees=True,
+        # use_degrees=True,
     )
 
     leader_config = KukaLeaderConfig(
         port=LEADER_PORT,
         id="my_kuka_leader",
         use_degrees=True,
+        alpha=0.2
     )
 
     follower = KukaIiwa(follower_config)
@@ -74,10 +77,12 @@ def main():
 
     try:
         print("Reading follower home position...")
-        follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 0.0
+        
 
         input("\nPress Enter to sync leader to follower home position...")
+
+        follower_obs = follower.get_observation()
+        follower_obs["gripper.pos"] = 0.0
 
         leader.send_goal_position(
             follower_obs,

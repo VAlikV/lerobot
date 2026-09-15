@@ -27,6 +27,10 @@ class KukaLeaderConfig(TeleoperatorConfig):
     # Whether to use degrees for angles; radians othervise 
     use_degrees: bool = True
 
+    # EMA: filtered = alpha * current + (1 - alpha) * previous.
+    # Smaller values smooth more; 1.0 disables smoothing.
+    alpha: float = 0.2
+
     # Seconds to wait after opening the port before trusting incoming data
     boot_delay_s: float = 2.0
 
@@ -34,6 +38,8 @@ class KukaLeaderConfig(TeleoperatorConfig):
     max_frame_age_s: float = 0.5
 
     def __post_init__(self):
+        if not 0.0 < self.alpha <= 1.0:
+            raise ValueError("alpha must be in (0, 1].")
         if len(self.joint_names) > 8:
             raise ValueError(
                 f"KukaLeaderConfig supports at most 8 channels, got {len(self.joint_names)} joint_names."

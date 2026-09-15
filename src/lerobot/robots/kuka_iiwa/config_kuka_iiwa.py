@@ -17,14 +17,15 @@ DEFAULT_JOINT_NAMES = (
 class KukaIiwaConfig(RobotConfig):
     """Configuration class for KUKA iiwa robots."""
 
-    urdf_path: str = "robots/iiwa2_gripper.urdf"
+    urdf_path: str = "robots/kuka_iiwa/iiwa2_gripper.urdf"
     use_task_space: bool = True
     # Requires use_task_space=False. Joint observations/actions use absolute degrees.
     use_direct_joint_control: bool = False
 
     joint_names: list[str] = field(default_factory=lambda: list(DEFAULT_JOINT_NAMES))
 
-    gripper_port: str = "/dev/ttyUSB0"
+    # None disables the gripper; its observed position is always -1.
+    gripper_port: str | None = "/dev/ttyUSB0"
     gripper_baudrate: int = 115200
 
     cameras: dict[str, CameraConfig] = field(default_factory=dict)

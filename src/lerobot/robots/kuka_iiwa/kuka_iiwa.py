@@ -119,7 +119,6 @@ class KukaIiwa(Robot):
             raise RuntimeError("KUKA is already connected.")
 
         import kuka_fri_py as fri
-        from .gripper import Gripper
 
         self._controller = fri.KukaController(
             fri.ControlMode.JOINT_POSITION,
@@ -128,10 +127,13 @@ class KukaIiwa(Robot):
         )
         self._controller.start()
 
-        self._gripper = Gripper(
-            device=self.config.gripper_port,
-            baudrate=self.config.gripper_baudrate,
-        )
+        if self.config.gripper_port is not None:
+            from .gripper import Gripper
+
+            self._gripper = Gripper(
+                device=self.config.gripper_port,
+                baudrate=self.config.gripper_baudrate,
+            )
 
         for cam in self.cameras.values():
             time.sleep(0.5)
@@ -164,7 +166,8 @@ class KukaIiwa(Robot):
         #     action["z.delta"] = 0.0
 
         self._set_target_action(action)
-        self._gripper.send(action["gripper.pos"])
+        if self._gripper is not None:
+            self._gripper.send(action["gripper.pos"])
         return action
 
     @check_if_not_connected
@@ -203,7 +206,7 @@ class KukaIiwa(Robot):
         with self._controller_lock:
             raw_obs = self._controller.get_observation()
 
-        gripper_pos = GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED
+        gripper_pos = GRIPPER_OPEN if self._gripper is not None and self._gripper.is_open else GRIPPER_CLOSED
 
         rot_matrix = np.array([
             raw_obs[10:13],
@@ -247,7 +250,7 @@ class KukaIiwa(Robot):
         if not np.isfinite(values).all():
             raise ValueError("`reset_pose` must contain only finite values.")
         if len(values) == len(names) - 1:
-            values.append(GRIPPER_OPEN if self._gripper.is_open else GRIPPER_CLOSED)
+            values.append(GRIPPER_OPEN if self._gripper is not None and self._gripper.is_open else GRIPPER_CLOSED)
         return dict(zip(names, values, strict=True))
 
     def _set_target_action(self, action: RobotAction) -> None:

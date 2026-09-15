@@ -36,6 +36,7 @@ class KukaLeader(Teleoperator):
         self.joint_names = list(config.joint_names)
         self._serial: serial.Serial | None = None
         self._reader: SerialFrameReader | None = None
+        self._filtered_action: RobotAction | None = None
 
     @property
     def action_features(self) -> dict:
@@ -58,6 +59,7 @@ class KukaLeader(Teleoperator):
         if self.is_connected:
             raise RuntimeError(f"{self} already connected.")
 
+        self._filtered_action = None
         self._serial = serial.Serial(self.config.port, self.config.baudrate, timeout=0.02)
         time.sleep(self.config.boot_delay_s)
 
@@ -85,6 +87,7 @@ class KukaLeader(Teleoperator):
             self._serial = None
 
         logger.info(f"{self} disconnected.")
+        self._filtered_action = None
 
     def configure(self) -> None:
         # Nothing to configure on a passive read-only board.
@@ -117,6 +120,7 @@ class KukaLeader(Teleoperator):
                 return
 
         logger.info(f"\nRunning calibration of {self}")
+        self._filtered_action = None
 
         # Home position
         input("Move the arm to the middle of its range of motion and press ENTER...")
@@ -152,16 +156,25 @@ class KukaLeader(Teleoperator):
         return delta / self._counts_per_unit()
 
     def get_action(self) -> RobotAction:
+        """Return joint commands smoothed with an exponential moving average."""
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
  
         raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
  
-        return {
+        action = {
             f"{joint}.pos": self._encoder_to_joint_angle(joint, raw[idx])
             for idx, joint in enumerate(self.joint_names)
         }
-
+        if self._filtered_action is not None:
+            alpha = self.config.alpha
+            action = {
+                name: alpha * value + (1.0 - alpha) * self._filtered_action[name]
+                for name, value in action.items()
+            }
+        # Seed from the first measurement, rather than moving from zero.
+        self._filtered_action = action.copy()
+        return action
 
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         # No actuators on this device -- nothing to send.
