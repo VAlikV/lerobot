@@ -101,8 +101,9 @@ class KukaLeader(Teleoperator):
     def calibrate(self) -> None:
         """
         Interactive sweep-and-record calibration:
-        1. Move each joint to a neutral "home" position, press Enter -> records homing offset.
+        1. Move channels after the first six to neutral, press Enter -> records their homing offsets.
         2. Move all joints through their full range, press Enter to stop -> records min/max.
+        3. Use the midpoint of min/max as the homing offset for the first six joints.
 
         Populates `self.calibration` with one `MotorCalibration` per joint and saves it to `self.calibration_fpath`.
         """
@@ -122,23 +123,26 @@ class KukaLeader(Teleoperator):
         logger.info(f"\nRunning calibration of {self}")
         self._filtered_action = None
 
-        # Home position
-        input("Move the arm to the middle of its range of motion and press ENTER...")
-        home_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
-        print("\nRecorded home positions:")
-        for joint, value in zip(self.joint_names, home_raw, strict=True):
-            print(f"  {joint:<12}: {value}")
+        # Only the remaining channels need a manually selected neutral position.
+        home_raw = None
+        if len(self.joint_names) > 6:
+            remaining_names = ", ".join(self.joint_names[6:])
+            input(f"Move {remaining_names} to their neutral positions and press ENTER...")
+            home_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
 
         # Range recording
         print()
         mins, maxes = self.record_ranges_of_motion()
 
+        print("\nHome positions (first six joints use the midpoint of recorded limits):")
         self.calibration = {}
         for idx, joint in enumerate(self.joint_names):
+            homing_offset = (int(mins[idx]) + int(maxes[idx])) // 2 if idx < 6 else int(home_raw[idx])
+            print(f"  {joint:<12}: {homing_offset}")
             self.calibration[joint] = MotorCalibration(
                 id=idx,
                 drive_mode=0,
-                homing_offset=int(home_raw[idx]),
+                homing_offset=homing_offset,
                 range_min=int(mins[idx]),
                 range_max=int(maxes[idx]),
             )
