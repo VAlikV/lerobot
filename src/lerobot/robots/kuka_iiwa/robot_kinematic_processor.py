@@ -177,3 +177,44 @@ class GripperPositionToDiscrete(RobotActionProcessorStep):
         self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
+
+
+@ProcessorStepRegistry.register("kuka_joint_bounds_and_safety")
+@dataclass
+class KukaJointBoundsAndSafety(RobotActionProcessorStep):
+
+    joint_offset_deg: float = 2.0
+
+    def action(self, action: RobotAction) -> RobotAction:
+        joint_limits_deg = np.array([
+            170.0,
+            120.0,
+            170.0,
+            120.0,
+            170.0,
+            120.0,
+            175.0,
+        ])
+
+        safe_limits_deg = joint_limits_deg - self.joint_offset_deg
+
+        for i in range(7):
+            key = f"joint_{i + 1}"
+
+            if key not in action:
+                raise ValueError(f"Missing required joint position: {key}")
+
+            value_deg = float(action[key])
+
+            action[key] = float(np.clip(value_deg, -safe_limits_deg[i], safe_limits_deg[i]))
+
+        return action
+
+    def reset(self):
+        pass
+
+    def transform_features(
+        self,
+        features: dict[PipelineFeatureType, dict[str, PolicyFeature]],
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
