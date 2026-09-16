@@ -20,6 +20,7 @@ from lerobot.processor.converters import (
 )
 from lerobot.robots.kuka_iiwa.robot_kinematic_processor import (
     GripperPositionToDiscrete,
+    KukaJointBoundsAndSafety,
 )
 
 
@@ -28,11 +29,11 @@ from lerobot.robots.kuka_iiwa.robot_kinematic_processor import (
 
 FPS = 50
 
-# Follower robot serial port
-FOLLOWER_PORT = "..."
+FOLLOWER_URDF_PATH = "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf"
 
-# Leader robot serial port
 LEADER_PORT = "/dev/ttyACM0"
+
+GRIPPER_PORT = None
 
 # Gripper thresholds in degrees
 GRIPPER_THRESHOLD = 26.0
@@ -42,13 +43,11 @@ GRIPPER_THRESHOLD = 26.0
 def main():
 
     follower_config = KukaIiwaConfig(
-        # port=FOLLOWER_PORT,
-        gripper_port=None,
+        gripper_port=GRIPPER_PORT,
         id="my_kuka_iiwa",
-        urdf_path = "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf",
+        urdf_path = FOLLOWER_URDF_PATH,
         use_task_space=False,
         use_direct_joint_control=True,
-        # use_degrees=True,
     )
 
     leader_config = KukaLeaderConfig(
@@ -61,8 +60,11 @@ def main():
     follower = KukaIiwa(follower_config)
     leader = KukaLeader(leader_config)
 
-    gripper_pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
+    pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
         steps=[
+            KukaJointBoundsAndSafety(
+                joint_offset_deg=2.0,
+            ),
             GripperPositionToDiscrete(
                 threshold=GRIPPER_THRESHOLD,
                 reverse=False
@@ -97,7 +99,7 @@ def main():
 
             leader_action = leader.get_action()
 
-            leader_action = gripper_pipeline(leader_action)
+            leader_action = pipeline(leader_action)
 
             _ = follower.send_action(leader_action)
 
