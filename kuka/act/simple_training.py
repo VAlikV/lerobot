@@ -1,15 +1,17 @@
 """This script demonstrates how to train ACT Policy on a real-world dataset."""
+# pip install --python /home/valikv/anaconda3/envs/lerobot/bin/python 'draccus>=0.11.6,<0.12.0'e
 
 from pathlib import Path
 
 import torch
 
 from lerobot.configs.types import FeatureType
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from lerobot.datasets.utils import dataset_to_policy_features
+from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
+from lerobot.utils.feature_utils import dataset_to_policy_features
 
 PATH = "outputs/device_assemble/act_stage3"
 DATASET_ID = "local/kuka_device_assemble_stage3"
@@ -78,11 +80,13 @@ def main():
         "action": make_delta_timestamps(cfg.action_delta_indices, dataset_metadata.fps),
     }
 
-    # add image features if they are present
-    delta_timestamps |= {
-        k: make_delta_timestamps(cfg.observation_delta_indices, dataset_metadata.fps)
-        for k in cfg.image_features
-    }
+    # ACT consumes a single image per camera (B, C, H, W). Querying [0] when
+    # observation_delta_indices is None adds an unwanted temporal dimension.
+    if cfg.observation_delta_indices is not None:
+        delta_timestamps |= {
+            k: make_delta_timestamps(cfg.observation_delta_indices, dataset_metadata.fps)
+            for k in cfg.image_features
+        }
 
     # Instantiate the dataset
     dataset = LeRobotDataset(DATASET_ID, delta_timestamps=delta_timestamps)
