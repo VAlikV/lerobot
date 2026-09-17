@@ -40,7 +40,7 @@ from typing import Any
 
 import torch
 
-from lerobot.processor.core import EnvTransition, TransitionKey
+from lerobot.lerobot_types import EnvTransition, TransitionKey
 from lerobot.processor.pipeline import ProcessorStep, ProcessorStepRegistry
 from lerobot.utils.constants import OBS_STATE
 
