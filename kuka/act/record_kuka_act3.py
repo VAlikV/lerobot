@@ -9,19 +9,8 @@ import draccus
 import numpy as np
 import torch
 
-import threading
-import multiprocess.resource_tracker
-
-# multiprocess 0.70.18 expects RLock._recursion_count(), which is absent in
-# CPython 3.12.0. This script does not create multiprocess resources, so the
-# incompatible shutdown finalizer can safely be disabled.
-# if not hasattr(threading.RLock(), "_recursion_count"):
-#     def _skip_incompatible_resource_tracker_finalizer(_resource_tracker: object) -> None:
-#         pass
-
-#     multiprocess.resource_tracker.ResourceTracker.__del__ = _skip_incompatible_resource_tracker_finalizer
-
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
@@ -442,7 +431,7 @@ def _processed_observation(env, env_processor, obs, info: dict) -> dict:
 
 
 def _assert_pending_episode_indices(dataset: LeRobotDataset, pending_episode_buffers: list[dict]) -> None:
-    for expected_idx, episode_buffer in enumerate(pending_episode_buffers):
+    for expected_idx, episode_buffer in enumerate(pending_episode_buffers, start=dataset.num_episodes):
         actual_idx = int(episode_buffer["episode_index"])
         if actual_idx != expected_idx:
             raise RuntimeError(
@@ -451,6 +440,22 @@ def _assert_pending_episode_indices(dataset: LeRobotDataset, pending_episode_buf
                 "This usually means the script was run before the rerecord buffer-index fix; "
                 "discard this recording run and record again."
             )
+
+
+def _finish_episode_buffer(dataset: LeRobotDataset, *, rerecord: bool) -> dict | None:
+    """Detach an accepted episode, or discard a take while preserving its index.
+
+    Metadata counts only saved episodes. Since encoding is deferred until the
+    robot disconnects, assign the next index explicitly on the writer's buffer.
+    Accepted episodes must retain their temporary camera frames until saving.
+    """
+    if dataset.writer is None:
+        raise RuntimeError("Recording requires a dataset opened in write mode.")
+    buffer = dataset.writer.episode_buffer
+    episode_index = int(buffer["episode_index"])
+    dataset.clear_episode_buffer(delete_images=rerecord)
+    dataset.writer.episode_buffer["episode_index"] = episode_index if rerecord else episode_index + 1
+    return None if rerecord else buffer
 
 
 def _load_policy(policy_dir: str, dataset_repo_id: str, requested_device: str):
@@ -552,6 +557,8 @@ def main() -> None:
         use_videos=True,
         image_writer_threads=4,
         image_writer_processes=0,
+        # Detached episode buffers require frame files to survive until final saving.
+        streaming_encoding=False,
     )
 
     logger.info(
@@ -697,8 +704,7 @@ def main() -> None:
                 success = bool(info.get(TeleopEvents.SUCCESS, False))
                 if rerecord:
                     logger.info("Re-recording episode %d after %.1fs", episode_idx + 1, ep_time)
-                    dataset.clear_episode_buffer()
-                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
+                    _finish_episode_buffer(dataset, rerecord=True)
                     if USE_TTS:
                         _log_say_console(f"Repeat {episode_idx + 1}")
                 else:
@@ -710,9 +716,8 @@ def main() -> None:
                         ep_time,
                         intervention_steps,
                     )
-                    pending_episode_buffers.append(dataset.episode_buffer)
+                    pending_episode_buffers.append(_finish_episode_buffer(dataset, rerecord=False))
                     episode_idx += 1
-                    dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
 
                 if episode_idx >= NUM_EPISODES:
                     break
@@ -776,6 +781,9 @@ def main() -> None:
             except Exception:
                 logger.exception("teleop disconnect failed")
         try:
+            # Drop only the unfinished take; accepted buffers own separate frame directories.
+            if dataset.has_pending_frames():
+                dataset.clear_episode_buffer()
             if pending_episode_buffers and USE_TTS:
                 _log_say_console("Saving")
             _assert_pending_episode_indices(dataset, pending_episode_buffers)
@@ -788,10 +796,12 @@ def main() -> None:
                 if USE_TTS:
                     _log_say_console(f"Save {idx}")
                 dataset.save_episode(episode_data=episode_buffer)
+        except Exception:
+            logger.exception("dataset save failed")
+            raise
+        finally:
             dataset.finalize()
             logger.info("Dataset finalized -> %s", REPO_ID)
-        except Exception:
-            logger.exception("dataset save/finalize failed")
 
 
 if __name__ == "__main__":
