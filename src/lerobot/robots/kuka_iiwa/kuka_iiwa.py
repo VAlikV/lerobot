@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import gymnasium as gym
 import numpy as np
-from scipy.spatial.transform import Rotation
+from scipy.spatial.transform import Rotation, Slerp
 
 from lerobot.cameras import make_cameras_from_configs
 from lerobot.processor import RobotAction, RobotObservation
@@ -140,7 +140,9 @@ class KukaIiwa(Robot):
             cam.connect()
 
         self._home_action = self._make_home_action()
-        self._set_target_action(self._home_action)
+        # Connecting must hold the measured pose. Home is a destination for reset,
+        # not an intermediate target before the environment selects its stage.
+        self._set_target_action(self._get_pose_observation())
         self._start_control_thread()
         logger.info(f"{self} connected.")
 
@@ -272,9 +274,13 @@ class KukaIiwa(Robot):
                 degrees=False,
             ).as_matrix()
 
-            with self._target_lock:
-                self._target_position = position
-                self._target_rotation = rotation
+            self._set_cartesian_target(position, rotation)
+
+    def _set_cartesian_target(self, position: np.ndarray, rotation: np.ndarray) -> None:
+        """Atomically update a Cartesian target without an Euler-angle round trip."""
+        with self._target_lock:
+            self._target_position = position.copy()
+            self._target_rotation = rotation.copy()
 
     def _start_control_thread(self) -> None:
         if self.config.control_hz <= 0:
@@ -524,6 +530,7 @@ class KukaIiwaRobotEnv(gym.Env):
         gripper_cmd: int = 1,
         *,
         send_gripper: bool = True,
+        rotation: np.ndarray | None = None,
     ) -> None:
         target_yaw = float(self.config.fixed_yaw + yaw) if self.use_yaw else float(yaw)
         gripper_pos = GRIPPER_OPEN
@@ -543,7 +550,11 @@ class KukaIiwaRobotEnv(gym.Env):
             "yaw.pos": target_yaw,
             "gripper.pos": float(gripper_pos),
         }
-        if send_gripper:
+        if rotation is not None:
+            self.robot._set_cartesian_target(xyz, rotation)
+            if send_gripper and self.robot._gripper is not None:
+                self.robot._gripper.send(gripper_pos)
+        elif send_gripper:
             self.robot.send_action(action)
         else:
             self.robot._set_target_action(action)
@@ -593,15 +604,12 @@ class KukaIiwaRobotEnv(gym.Env):
             [current_pose["x.pos"], current_pose["y.pos"], current_pose["z.pos"]],
             dtype=np.float32,
         )
-        start_xyz = np.clip(start_xyz, self.ee_min, self.ee_max)
-
-        if self.use_yaw:
-            start_yaw = float(
-                (current_pose["yaw.pos"] - self.config.fixed_yaw + np.pi) % (2.0 * np.pi) - np.pi
-            )
-            start_yaw = float(np.clip(start_yaw, self.yaw_min, self.yaw_max))
-        else:
-            start_yaw = float(current_pose["yaw.pos"])
+        # Start from the measured pose, even outside the destination bounds.
+        # Clipping the start or immediately replacing roll/pitch causes a jump.
+        start_rpy = [current_pose[key] for key in ("roll.pos", "pitch.pos", "yaw.pos")]
+        final_yaw = self.config.fixed_yaw + target_yaw if self.use_yaw else target_yaw
+        target_rpy = [self.config.fixed_roll, self.config.fixed_pitch, final_yaw]
+        orientation_path = Slerp([0.0, 1.0], Rotation.from_euler("xyz", [start_rpy, target_rpy]))
 
         if reset_time_s == 0.0:
             self._send_target(target_xyz, target_yaw, gripper_cmd=home_gripper_cmd)
@@ -611,16 +619,16 @@ class KukaIiwaRobotEnv(gym.Env):
             gripper_sent = False
             while True:
                 now_t = time.perf_counter()
-                alpha = min((now_t - reset_start_t) / move_time_s, 1.0)
+                alpha = min((now_t - reset_start_t) / move_time_s, 1.0) if gripper_sent else 0.0
                 beta = min((now_t - reset_start_t) / reset_time_s, 1.0)
                 xyz = start_xyz + (target_xyz - start_xyz) * alpha
-                yaw = start_yaw + (target_yaw - start_yaw) * alpha
 
                 self._send_target(
                     xyz.astype(np.float32, copy=False),
-                    float(yaw),
+                    target_yaw,
                     gripper_cmd=home_gripper_cmd if not gripper_sent else 1,
                     send_gripper=not gripper_sent,
+                    rotation=orientation_path(alpha).as_matrix(),
                 )
                 gripper_sent = True
 
