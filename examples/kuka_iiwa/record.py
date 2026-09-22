@@ -1,11 +1,17 @@
 """
 KUKA Leader -> KUKA IIWA Follower Teleoperation + Dataset Recording
 
-Before running, configure only the values in the "USER CONFIGURATION" section below.
+Keyboard Controls During Recording:
+--> / n - Prematurely terminate the current episode / reset; proceed to the next. 
+<-- / r - Cancel the current episode; re-record.
+esc / q - Immediately stop the session.
 """
 
+import json
 import time
+import draccus
 
+from lerobot.cameras.opencv import OpenCVCameraConfig
 from lerobot.robots.kuka_iiwa import KukaIiwa, KukaIiwaConfig
 from lerobot.teleoperators.kuka_leader import KukaLeader, KukaLeaderConfig
 from lerobot.utils.robot_utils import precise_sleep
@@ -32,27 +38,15 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.keyboard_input import init_keyboard_listener
 
+from record_config import (
+    RecordingConfig,
+    PipelineConfig,
+    DatasetConfig,
+)
 
-# USER CONFIGURATION
+CONFIG_PATH = "lerobot/examples/kuka_iiwa/configs/record_config.json"
 
-FPS = 30
-FOLLOWER_URDF_PATH = "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf"
-LEADER_PORT = "/dev/ttyACM0"
-GRIPPER_PORT = None
-# Gripper thresholds in degrees
-GRIPPER_THRESHOLD = 26.0
-
-REPO_ID = "local/kuka_test_1"
-TASK_DESCRIPTION = "kuka_assemble"
-RESUME = False
-DATASET_ROOT = None
-NUM_EPISODES = 2
-EPISODE_TIME_S = 60
-# Pause between episodes
-RESET_TIME_S = 30
-USE_TTS = True
-
-
+# Optionally can be switch to record_loop from lerobot.scripts.lerobot_record
 @safe_stop_image_writer
 def _record_episode(
     follower: KukaIiwa,
@@ -102,34 +96,33 @@ def _reset_phase(
         precise_sleep(max(1.0 / fps - (time.perf_counter() - t0), 0.0))
 
 
+def load_config(path: str) -> RecordingConfig:
+    with open(path, "r") as f:
+        raw_cfg = json.load(f)
+
+    return draccus.decode(
+        RecordingConfig,
+        raw_cfg,
+    )
+
+
 def main():
 
-    follower_config = KukaIiwaConfig(
-        gripper_port=GRIPPER_PORT,
-        id="my_kuka_iiwa",
-        urdf_path=FOLLOWER_URDF_PATH,
-        use_task_space=False,
-        use_direct_joint_control=True,
-    )
+    cfg = load_config(CONFIG_PATH)
 
-    leader_config = KukaLeaderConfig(
-        port=LEADER_PORT,
-        id="my_kuka_leader",
-        use_degrees=True,
-        alpha=0.2
-    )
+    fps = cfg.fps
 
-    follower = KukaIiwa(follower_config)
-    leader = KukaLeader(leader_config)
+    follower = KukaIiwa(cfg.robot)
+    leader = KukaLeader(cfg.leader)
 
     pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
         steps=[
             KukaJointBoundsAndSafety(
-                joint_offset_deg=2.0,
+                joint_offset_deg=cfg.pipeline.joint_offset_deg,
             ),
             GripperPositionToDiscrete(
-                threshold=GRIPPER_THRESHOLD,
-                reverse=False
+                threshold=cfg.pipeline.gripper_threshold,
+                reverse=cfg.pipeline.gripper_reverse,
             )
         ],
         to_transition=robot_action_to_transition,
@@ -153,19 +146,19 @@ def main():
 
     num_cameras = len(getattr(follower, "cameras", {}) or {})
 
-    if RESUME:
+    if cfg.dataset.resume:
         dataset = LeRobotDataset.resume(
-            REPO_ID,
-            root=DATASET_ROOT,
+            cfg.dataset.repo_id,
+            root=cfg.dataset.root,
             image_writer_processes=0,
             image_writer_threads=4 * max(num_cameras, 1),
         )
-        sanity_check_dataset_robot_compatibility(dataset, follower, FPS, dataset_features)
+        sanity_check_dataset_robot_compatibility(dataset, follower, fps, dataset_features)
     else:
         dataset = LeRobotDataset.create(
-            REPO_ID,
-            FPS,
-            root=DATASET_ROOT,
+            cfg.dataset.repo_id,
+            fps,
+            root=cfg.dataset.root,
             robot_type=follower.name,
             features=dataset_features,
             use_videos=True,
@@ -200,22 +193,22 @@ def main():
 
         with VideoEncodingManager(dataset):
             episode_idx = 0
-            while episode_idx < NUM_EPISODES and not events["stop_recording"]:
+            while episode_idx < cfg.dataset.num_episodes and not events["stop_recording"]:
                 episode_index = dataset.num_episodes
 
-                if USE_TTS:
+                if cfg.dataset.use_tts:
                     log_say(f"Recording episode {episode_index}", True)
-                print(f"\n--- Recording episode {episode_index} (session {episode_idx + 1}/{NUM_EPISODES}) ---")
+                print(f"\n--- Recording episode {episode_index} (session {episode_idx + 1}/{cfg.dataset.num_episodes}) ---")
 
                 # Main record loop
                 _record_episode(
                     follower, leader, pipeline, dataset, events,
-                    TASK_DESCRIPTION, FPS, EPISODE_TIME_S,
+                    cfg.dataset.task, fps, cfg.dataset.episode_time_s,
                 )
 
                 if events["rerecord_episode"]:
                     print("Re-recording episode (discarding last take)...")
-                    if USE_TTS:
+                    if cfg.dataset.use_tts:
                         log_say("Re-record episode", True)
                     events["rerecord_episode"] = False
                     events["exit_early"] = False
@@ -231,10 +224,10 @@ def main():
                     break
 
                 # Reset the environment if not stopping or re-recording
-                if RESET_TIME_S > 0 and episode_idx < NUM_EPISODES:
-                    if USE_TTS:
+                if cfg.dataset.reset_time_s > 0 and episode_idx < cfg.dataset.num_episodes:
+                    if cfg.dataset.use_tts:
                         log_say("Reset the environment", True)
-                    _reset_phase(follower, leader, pipeline, FPS, RESET_TIME_S)
+                    _reset_phase(follower, leader, pipeline, fps, cfg.dataset.reset_time_s)
 
     except KeyboardInterrupt:
         print("\nStopping teleoperation...")
@@ -252,7 +245,7 @@ def main():
         if listener is not None:
             listener.stop()
 
-        print(f"Dataset finalized -> {REPO_ID}")
+        print(f"Dataset finalized -> {cfg.dataset.repo_id}")
 
 
 if __name__ == "__main__":

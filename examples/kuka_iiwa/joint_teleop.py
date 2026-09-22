@@ -88,7 +88,7 @@ def main():
 
         leader.send_goal_position(
             follower_obs,
-            hold_s=2.0,
+            hold_s=3.0,
             tolerance_counts=50,
         )
 

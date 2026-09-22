@@ -1,0 +1,72 @@
+{
+    "fps": 30,
+
+    "robot": {
+
+        "id": "my_kuka_iiwa",
+
+        "urdf_path": "src/lerobot/robots/kuka_iiwa/iiwa2_gripper.urdf",
+
+        "use_task_space": false,
+        "use_direct_joint_control": true,
+
+        "gripper_port": "/dev/ttyACM0",
+        "gripper_baudrate": 115200,
+
+        "resolution": [224, 224],
+        "camera_timeout_ms": 3000,
+
+        "cameras": {
+            "front": {
+                "type": "opencv",
+                "index_or_path": 2,
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "warmup_s": 3
+            },
+            "side": {
+                "type": "opencv",
+                "index_or_path": 4,
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "warmup_s": 3
+            },
+            "gripper": {
+                "type": "opencv",
+                "index_or_path": 6,
+                "width": 640,
+                "height": 480,
+                "fps": 30,
+                "warmup_s": 5
+            }
+        }
+    },
+
+    "leader": {
+        "port": "/dev/ttyACM1",
+        "id": "my_kuka_leader",
+        "use_degrees": true,
+        "alpha": 0.2
+    },
+
+    "pipeline": {
+        "joint_offset_deg": 2.0,
+        "gripper_threshold": 40.0,
+        "gripper_reverse": false
+    },
+
+    "dataset": {
+        "repo_id": "local/kuka_test_1",
+        "task": "kuka_assemble",
+        "resume": false,
+        "root": null,
+
+        "num_episodes": 2,
+        "episode_time_s": 60.0,
+        "reset_time_s": 30.0,
+
+        "use_tts": true
+    }
+}
