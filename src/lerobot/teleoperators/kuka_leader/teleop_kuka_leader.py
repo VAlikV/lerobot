@@ -179,7 +179,7 @@ class KukaLeader(Teleoperator):
     def send_feedback(self, feedback: dict[str, Any]) -> None:
         pass
 
-    def send_goal_position(self, goal: RobotAction, hold_s: float = 2.0, tolerance_counts: int = 50) -> None:
+    def send_goal_position(self, goal: RobotAction, hold_s: float = 3.0, tolerance_counts: int = 50) -> None:
 
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
