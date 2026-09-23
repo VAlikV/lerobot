@@ -199,7 +199,7 @@ class KukaJointBoundsAndSafety(RobotActionProcessorStep):
         safe_limits_deg = joint_limits_deg - self.joint_offset_deg
 
         for i in range(7):
-            key = f"joint_{i + 1}"
+            key = f"joint_{i + 1}.pos"
 
             if key not in action:
                 raise ValueError(f"Missing required joint position: {key}")
