@@ -65,6 +65,9 @@
 
         "num_episodes": 2,
         "episode_time_s": 60.0,
+        
+        "reset_to_pose": false,
+        "reset_pose": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
         "reset_time_s": 30.0,
 
         "use_tts": true

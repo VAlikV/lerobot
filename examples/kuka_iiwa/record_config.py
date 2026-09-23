@@ -23,6 +23,9 @@ class DatasetConfig:
 
     num_episodes: int = 2
     episode_time_s: float = 60.0
+
+    reset_to_pose: bool = False
+    reset_pose: list[float]
     reset_time_s: float = 30.0
 
     use_tts: bool = True
