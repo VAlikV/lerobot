@@ -8,27 +8,27 @@ from lerobot.teleoperators.kuka_leader import KukaLeaderConfig
 
 @dataclass
 class PipelineConfig:
-    joint_offset_deg: float = 2.0
-    gripper_threshold: float = 26.0
-    gripper_reverse: bool = False
+    joint_offset_deg: float
+    gripper_threshold: float
+    gripper_reverse: bool
 
 
 @dataclass
 class DatasetConfig:
-    repo_id: str = "local/kuka_test_1"
-    task: str = "kuka_assemble"
+    repo_id: str
+    task: str
 
-    resume: bool = False
-    root: str | None = None
+    resume: bool
+    root: str | None
 
-    num_episodes: int = 2
-    episode_time_s: float = 60.0
+    num_episodes: int
+    episode_time_s: float
 
-    reset_to_pose: bool = False
+    reset_to_pose: bool
     reset_pose: list[float]
-    reset_time_s: float = 30.0
+    reset_time_s: float
 
-    use_tts: bool = True
+    use_tts: bool
 
 
 @dataclass
