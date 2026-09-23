@@ -39,7 +39,7 @@ from record_config import (
     RecordingConfig
 )
 from keyboard_controls import init_kuka_keyboard_listener
-from record_config import _finish_episode_buffer, _assert_pending_episode_indices
+from record_utils import _finish_episode_buffer, _assert_pending_episode_indices
 
 CONFIG_PATH = "lerobot/examples/kuka_iiwa/configs/record_config.json"
 
