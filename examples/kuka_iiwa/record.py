@@ -14,8 +14,9 @@ import draccus
 
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
-from lerobot.processor import RobotAction, RobotProcessorPipeline, make_default_processors
+from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline, make_default_processors
 from lerobot.processor.converters import (
+    robot_action_observation_to_transition,
     robot_action_to_transition,
     transition_to_robot_action,
 )
@@ -34,6 +35,7 @@ from lerobot.teleoperators.kuka_leader import KukaLeader
 from lerobot.robots.kuka_iiwa.robot_kinematic_processor import (
     GripperPositionToDiscrete,
     KukaJointBoundsAndSafety,
+    KukaJointDeltaScaling,
 )
 from record_config import (
     RecordingConfig
@@ -43,7 +45,8 @@ from record_utils import _finish_episode_buffer, _assert_pending_episode_indices
 
 CONFIG_PATH = "lerobot/examples/kuka_iiwa/configs/record_config.json"
 
-# Optionally can be switch to record_loop from lerobot.scripts.lerobot_record
+# Main record episode loop
+# Optionally can be switched to record_loop from lerobot.scripts.lerobot_record
 @safe_stop_image_writer
 def _record_episode(
     follower: KukaIiwa,
@@ -54,6 +57,7 @@ def _record_episode(
     task: str,
     fps: int,
     duration_s: float,
+    joint_scaler
 ) -> None:
     episode_start = time.perf_counter()
     while time.perf_counter() - episode_start < duration_s:
@@ -61,8 +65,10 @@ def _record_episode(
 
         obs = follower.get_observation()
 
+        joint_scaler.set_enabled(events["apply_scale"])
+
         leader_action = leader.get_action()
-        leader_action = pipeline(leader_action)
+        leader_action = pipeline((leader_action, obs))
 
         sent_action = follower.send_action(leader_action)
 
@@ -77,6 +83,7 @@ def _record_episode(
         precise_sleep(max(1.0 / fps - (time.perf_counter() - t0), 0.0))
 
 
+# Reset with optional linear interpolation to starting pose and teleoperation without recording
 def _reset_phase(
     follower: KukaIiwa,
     leader: KukaLeader,
@@ -86,6 +93,7 @@ def _reset_phase(
     reset_to_pose: bool,
     reset_pose: list[float],
     duration_s: float,
+    joint_scaler
 ) -> None:
 
     if reset_to_pose:
@@ -107,8 +115,11 @@ def _reset_phase(
     reset_start = time.perf_counter()
     while time.perf_counter() - reset_start < duration_s:
         t0 = time.perf_counter()
+
+        obs = follower.get_observation()
+        joint_scaler.set_enabled(events["apply_scale"])
         leader_action = leader.get_action()
-        leader_action = pipeline(leader_action)
+        leader_action = pipeline((leader_action, obs))
         follower.send_action(leader_action)
 
         if events["exit_early"]:
@@ -127,10 +138,12 @@ def load_config(path: str) -> RecordingConfig:
         raw_cfg,
     )
 
+
 def _log_say_console(text: str, play_sound: bool) -> None:
     """Print TTS text explicitly, then pass it to the existing voice helper."""
     print(f"[TTS] {text}", flush=True)
     log_say(text, play_sound)
+
 
 def main():
 
@@ -141,8 +154,11 @@ def main():
     follower = KukaIiwa(cfg.robot)
     leader = KukaLeader(cfg.leader)
 
-    pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
+    joint_scaler = KukaJointDeltaScaling(scale_factor=cfg.pipeline.scale_factor,)
+
+    pipeline = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
         steps=[
+            joint_scaler,
             KukaJointBoundsAndSafety(
                 joint_offset_deg=cfg.pipeline.joint_offset_deg,
             ),
@@ -151,7 +167,7 @@ def main():
                 reverse=cfg.pipeline.gripper_reverse,
             )
         ],
-        to_transition=robot_action_to_transition,
+        to_transition=robot_action_observation_to_transition,
         to_output=transition_to_robot_action,
     )
 
@@ -232,6 +248,7 @@ def main():
             _record_episode(
                 follower, leader, pipeline, dataset, events,
                 cfg.dataset.task, fps, cfg.dataset.episode_time_s,
+                joint_scaler
             )
 
             # Reset if not stopped or last episode
@@ -241,7 +258,8 @@ def main():
                 _log_say_console("Reset the environment", cfg.dataset.use_tts)
                 _reset_phase(
                     follower, leader, pipeline, events, fps, 
-                    cfg.dataset.reset_to_pose, cfg.dataset.reset_pose, cfg.dataset.reset_time_s
+                    cfg.dataset.reset_to_pose, cfg.dataset.reset_pose, cfg.dataset.reset_time_s,
+                    joint_scaler
                 )
 
             if events["rerecord_episode"]:
