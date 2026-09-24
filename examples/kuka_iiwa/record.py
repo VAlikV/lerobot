@@ -17,7 +17,6 @@ from lerobot.utils.utils import log_say
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline, make_default_processors
 from lerobot.processor.converters import (
     robot_action_observation_to_transition,
-    robot_action_to_transition,
     transition_to_robot_action,
 )
 from lerobot.common.control_utils import sanity_check_dataset_robot_compatibility, follower_smooth_move_to
@@ -99,18 +98,22 @@ def _reset_phase(
     if reset_to_pose:
         current = follower.get_observation()
         target = dict(zip(follower.action_features.keys(), reset_pose))
-        follower_smooth_move_to(current, target, duration_s=3.0)
+        follower_smooth_move_to(robot=follower, current=current, target=target, duration_s=3.0)
 
         input("\nPress Enter to sync leader to follower home position...")
         
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 0.0
+        follower_obs["gripper.pos"] = 1.0
 
         leader.send_goal_position(
             follower_obs,
             hold_s=3.0,
             tolerance_counts=50,
         )
+
+        # Stop applying scale
+        joint_scaler.reset()
+        events["apply_scale"] = False
     
     reset_start = time.perf_counter()
     while time.perf_counter() - reset_start < duration_s:
@@ -227,7 +230,7 @@ def main():
         input("\nPress Enter to sync leader to follower home position...")
 
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 0.0
+        follower_obs["gripper.pos"] = 1.0
 
         leader.send_goal_position(
             follower_obs,
@@ -241,8 +244,7 @@ def main():
         episode_idx = 0
         while episode_idx < cfg.dataset.num_episodes and not events["stop_recording"]:
 
-            episode_index = dataset.num_episodes
-            _log_say_console(f"Recording episode {episode_index}", cfg.dataset.use_tts)
+            _log_say_console(f"Recording episode {episode_idx}", cfg.dataset.use_tts)
 
             # Main record loop
             _record_episode(

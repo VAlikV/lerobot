@@ -35,7 +35,7 @@
             },
             "gripper": {
                 "type": "opencv",
-                "index_or_path": 6,
+                "index_or_path": 0,
                 "width": 640,
                 "height": 480,
                 "fps": 30,
@@ -55,7 +55,7 @@
         "joint_offset_deg": 2.0,
         "gripper_threshold": 40.0,
         "gripper_reverse": false,
-        "scale_factor": 5.0
+        "scale_factor": 3.0
     },
 
     "dataset": {
@@ -64,12 +64,12 @@
         "resume": false,
         "root": null,
 
-        "num_episodes": 2,
+        "num_episodes": 5,
         "episode_time_s": 60.0,
         
-        "reset_to_pose": false,
-        "reset_pose": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-        "reset_time_s": 30.0,
+        "reset_to_pose": true,
+        "reset_pose": [0.0, 40.0, 0.0, -73.0, 0.0, 67.0, 0.0, 1.0],
+        "reset_time_s": 2.0,
 
         "use_tts": true
     }

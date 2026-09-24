@@ -236,25 +236,26 @@ class KukaJointDeltaScaling(ProcessorStep):
     def set_enabled(self, enabled: bool) -> None:
         if enabled != self._enabled:
             self._enabled = enabled
-            self._anchor_leader = None
+            #self._anchor_leader = None
  
     def __call__(self, transition):
         action = dict(transition[TransitionKey.ACTION])
- 
-        if not self._enabled:
-            transition[TransitionKey.ACTION] = action
-            return transition
- 
         observation = transition[TransitionKey.OBSERVATION]
+ 
+        #if not self._enabled:
+        #    transition[TransitionKey.ACTION] = action
+        #    return transition
  
         if self._anchor_leader is None:
             self._anchor_leader = {k: float(action[k]) for k in self.joint_names}
             self._anchor_output = {k: float(observation[k]) for k in self.joint_names}
+
+        effective_scale = self.scale_factor if self._enabled else 1.0
  
         scaled = dict(action)
         for key in self.joint_names:
             leader_delta = float(action[key]) - self._anchor_leader[key]
-            scaled[key] = self._anchor_output[key] + leader_delta / self.scale_factor
+            scaled[key] = self._anchor_output[key] + leader_delta / effective_scale
  
         self._anchor_leader = {k: float(action[k]) for k in self.joint_names}
         self._anchor_output = {k: scaled[k] for k in self.joint_names}
