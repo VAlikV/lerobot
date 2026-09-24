@@ -11,6 +11,7 @@ class PipelineConfig:
     joint_offset_deg: float
     gripper_threshold: float
     gripper_reverse: bool
+    scale_factor: float
 
 
 @dataclass

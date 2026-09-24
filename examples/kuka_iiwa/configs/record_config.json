@@ -54,7 +54,8 @@
     "pipeline": {
         "joint_offset_deg": 2.0,
         "gripper_threshold": 40.0,
-        "gripper_reverse": false
+        "gripper_reverse": false,
+        "scale_factor": 5.0
     },
 
     "dataset": {

@@ -11,6 +11,7 @@ from lerobot.processor import (
     RobotActionProcessorStep,
     RobotObservation,
     TransitionKey,
+    ProcessorStep,
 )
 from scipy.spatial.transform import Rotation
 
@@ -217,4 +218,54 @@ class KukaJointBoundsAndSafety(RobotActionProcessorStep):
         self,
         features: dict[PipelineFeatureType, dict[str, PolicyFeature]],
     ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+@ProcessorStepRegistry.register("kuka_joint_delta_scaling")
+@dataclass
+class KukaJointDeltaScaling(ProcessorStep):
+
+ 
+    scale_factor: float = 5.0
+    joint_names: tuple = tuple(f"joint_{i}.pos" for i in range(1, 8))
+ 
+    def __post_init__(self):
+        self._enabled = False
+        self._anchor_leader: dict | None = None
+        self._anchor_output: dict | None = None
+ 
+    def set_enabled(self, enabled: bool) -> None:
+        if enabled != self._enabled:
+            self._enabled = enabled
+            self._anchor_leader = None
+ 
+    def __call__(self, transition):
+        action = dict(transition[TransitionKey.ACTION])
+ 
+        if not self._enabled:
+            transition[TransitionKey.ACTION] = action
+            return transition
+ 
+        observation = transition[TransitionKey.OBSERVATION]
+ 
+        if self._anchor_leader is None:
+            self._anchor_leader = {k: float(action[k]) for k in self.joint_names}
+            self._anchor_output = {k: float(observation[k]) for k in self.joint_names}
+ 
+        scaled = dict(action)
+        for key in self.joint_names:
+            leader_delta = float(action[key]) - self._anchor_leader[key]
+            scaled[key] = self._anchor_output[key] + leader_delta / self.scale_factor
+ 
+        self._anchor_leader = {k: float(action[k]) for k in self.joint_names}
+        self._anchor_output = {k: scaled[k] for k in self.joint_names}
+ 
+        transition[TransitionKey.ACTION] = scaled
+        return transition
+ 
+    def reset(self):
+        self._enabled = False
+        self._anchor_leader = None
+        self._anchor_output = None
+ 
+    def transform_features(self, features):
         return features

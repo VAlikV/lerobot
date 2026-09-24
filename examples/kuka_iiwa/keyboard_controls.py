@@ -25,7 +25,7 @@ def init_kuka_keyboard_listener():
             apply_recording_control("esc", events)
 
         elif key == "s":
-            events["apply_scale"] = True
+            events["apply_scale"] = not events["apply_scale"]
 
     listener = create_key_listener(
         on_key,
