@@ -42,7 +42,7 @@ from record_config import (
 from keyboard_controls import init_kuka_keyboard_listener
 from record_utils import _finish_episode_buffer, _assert_pending_episode_indices
 
-CONFIG_PATH = "lerobot/examples/kuka_iiwa/configs/record_config.json"
+CONFIG_PATH = "examples/kuka_iiwa/configs/record_config.json"
 
 # Main record episode loop
 # Optionally can be switched to record_loop from lerobot.scripts.lerobot_record
@@ -103,7 +103,7 @@ def _reset_phase(
         input("\nPress Enter to sync leader to follower home position...")
         
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 1.0
+        follower_obs["gripper.pos"] = 45.0
 
         leader.send_goal_position(
             follower_obs,
@@ -114,6 +114,7 @@ def _reset_phase(
         # Stop applying scale
         joint_scaler.reset()
         events["apply_scale"] = False
+        leader.reset_filter()
     
     reset_start = time.perf_counter()
     while time.perf_counter() - reset_start < duration_s:
@@ -230,7 +231,7 @@ def main():
         input("\nPress Enter to sync leader to follower home position...")
 
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 1.0
+        follower_obs["gripper.pos"] = 45.0
 
         leader.send_goal_position(
             follower_obs,

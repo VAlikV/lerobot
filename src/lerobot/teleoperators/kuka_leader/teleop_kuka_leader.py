@@ -34,6 +34,7 @@ class KukaLeader(Teleoperator):
         super().__init__(config)
         self.config = config
         self.joint_names = list(config.joint_names)
+        self.gripper_joint = "gripper"
         self._serial: serial.Serial | None = None
         self._reader: SerialFrameReader | None = None
         self._filtered_action: RobotAction | None = None
@@ -59,7 +60,7 @@ class KukaLeader(Teleoperator):
         if self.is_connected:
             raise RuntimeError(f"{self} already connected.")
 
-        self._filtered_action = None
+        self.reset_filter()
         self._serial = serial.Serial(self.config.port, self.config.baudrate, timeout=0.02)
         time.sleep(self.config.boot_delay_s)
 
@@ -87,7 +88,7 @@ class KukaLeader(Teleoperator):
             self._serial = None
 
         logger.info(f"{self} disconnected.")
-        self._filtered_action = None
+        self.reset_filter()
 
     def configure(self) -> None:
         # Nothing to configure on a passive read-only board.
@@ -96,6 +97,10 @@ class KukaLeader(Teleoperator):
     @property
     def is_calibrated(self) -> bool:
         return set(self.joint_names) <= set(self.calibration)
+
+    def reset_filter(self) -> None:
+        """Reset the action filter so the next measurement seeds the filter."""
+        self._filtered_action = None
 
     # software-only calibration
     def calibrate(self) -> None:
@@ -120,7 +125,7 @@ class KukaLeader(Teleoperator):
                 return
 
         logger.info(f"\nRunning calibration of {self}")
-        self._filtered_action = None
+        self.reset_filter()
 
         # Home position
         input("Move the arm to the middle of its range of motion and press ENTER...")
@@ -169,7 +174,11 @@ class KukaLeader(Teleoperator):
         if self._filtered_action is not None:
             alpha = self.config.alpha
             action = {
-                name: alpha * value + (1.0 - alpha) * self._filtered_action[name]
+                name: (
+                    value
+                    if name == f"{self.gripper_joint}.pos"
+                    else alpha * value + (1.0 - alpha) * self._filtered_action[name]
+                )
                 for name, value in action.items()
             }
         # Seed from the first measurement, rather than moving from zero.
