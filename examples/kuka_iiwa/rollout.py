@@ -7,7 +7,7 @@ import torch
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
-from lerobot.policies.utils import make_robot_action
+from lerobot.policies.utils import build_inference_frame, make_robot_action
 from lerobot.processor import (
     AddBatchDimensionProcessorStep,
     DataProcessorPipeline,
@@ -27,7 +27,6 @@ from lerobot.robots.kuka_iiwa import KukaIiwa
 from lerobot.robots.kuka_iiwa.robot_kinematic_processor import KukaJointBoundsAndSafety
 from lerobot.common.control_utils import follower_smooth_move_to
 from lerobot.utils.constants import OBS_STR
-from lerobot.utils.feature_utils import build_dataset_frame
 from lerobot.utils.robot_utils import precise_sleep
 
 from record_config import RecordingConfig
@@ -52,17 +51,6 @@ def load_config(path: str) -> RecordingConfig:
     return draccus.decode(RecordingConfig, raw_cfg)
 
 
-def _make_runtime_processor(device: str) -> DataProcessorPipeline[EnvTransition, EnvTransition]:
-    return DataProcessorPipeline[EnvTransition, EnvTransition](
-        steps=[
-            AddBatchDimensionProcessorStep(),
-            DeviceProcessorStep(device=device),
-        ],
-        to_transition=identity_transition,
-        to_output=identity_transition,
-    )
-
-
 def main() -> None:
     device = torch.device(DEVICE if torch.cuda.is_available() or DEVICE == "cpu" else "cpu")
 
@@ -82,8 +70,6 @@ def main() -> None:
         pretrained_path=MODEL_ID,
         dataset_stats=dataset_metadata.stats,
     )
-
-    runtime_processor = _make_runtime_processor(device=str(device))
 
     safety_pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
         steps=[
@@ -113,16 +99,10 @@ def main() -> None:
                 start_t = time.perf_counter()
 
                 obs = follower.get_observation()
-                observation_frame = build_dataset_frame(dataset_metadata.features, obs, prefix=OBS_STR)
-
-                transition = create_transition(observation=observation_frame)
-                transition = runtime_processor(transition)
-                observation = {
-                    key: value
-                    for key, value in transition[TransitionKey.OBSERVATION].items()
-                    if key in policy.config.input_features
-                }
-                observation = preprocess(observation)
+                observation_frame = build_inference_frame(
+                    observation=obs, ds_features=dataset_metadata.features, device=device
+                    )
+                observation = preprocess(observation_frame)
 
                 with torch.no_grad():
                     action = policy.select_action(observation)
