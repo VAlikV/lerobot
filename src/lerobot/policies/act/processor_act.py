@@ -18,9 +18,13 @@ from typing import Any
 import torch
 
 from lerobot.processor import (
+    AbsoluteActionsProcessorStep,
     PolicyAction,
     PolicyProcessorPipeline,
-    make_default_pre_post_processors,
+    ProcessorStep,
+    RelativeActionsProcessorStep,
+    make_default_policy_processor_steps,
+    make_policy_processor_pipelines,
 )
 
 from .configuration_act import ACTConfig
@@ -47,4 +51,32 @@ def make_act_pre_post_processors(
         tuple[PolicyProcessorPipeline[dict[str, Any], dict[str, Any]], PolicyProcessorPipeline[PolicyAction, PolicyAction]]: A tuple containing the
         pre-processor pipeline and the post-processor pipeline.
     """
-    return make_default_pre_post_processors(config, dataset_stats, normalizer_device=config.device)
+    
+    print(">>> ACT PROCESSOR FACTORY CALLED")       # debug
+
+
+    # OpenPi approach to chunk-wise relative actions
+
+    relative_step = RelativeActionsProcessorStep(
+        enabled=config.use_relative_actions,
+        exclude_joints=getattr(config, "relative_exclude_joints", []),
+        action_names=getattr(config, "action_feature_names", None),
+    )
+
+    steps = make_default_policy_processor_steps(config, dataset_stats)
+
+    # raw → relative → normalize → model → unnormalize → absolute
+    input_steps: list[ProcessorStep] = [
+        steps.add_batch_dim,
+        relative_step,
+        steps.normalize,
+        steps.to_device,
+    ]
+
+    output_steps: list[ProcessorStep] = [
+        steps.unnormalize,
+        AbsoluteActionsProcessorStep(enabled=config.use_relative_actions, relative_step=relative_step),
+        steps.to_cpu,
+    ]
+
+    return make_policy_processor_pipelines(input_steps=input_steps, output_steps=output_steps)

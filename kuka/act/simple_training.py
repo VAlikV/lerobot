@@ -12,6 +12,7 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.feature_utils import dataset_to_policy_features
+from lerobot.datasets.dataset_tools import recompute_stats
 
 PATH = "outputs/device_assemble/act_stage3"
 DATASET_ID = "local/kuka_device_assemble_stage3"
@@ -29,6 +30,8 @@ BATCH_SIZE = 32
 TRAINING_STEPS = 70000
 LOG_FREQ = 100
 SAVE_FREQ = 5000
+
+USE_RELATIVE_ACTIONS = True
 
 
 def make_delta_timestamps(delta_indices: list[int] | None, fps: int) -> list[float]:
@@ -69,6 +72,10 @@ def main():
     else:
         print("Train from scratch")
         cfg = ACTConfig(input_features=input_features, output_features=output_features, device=str(device))
+        cfg.use_relative_actions = USE_RELATIVE_ACTIONS
+        cfg.action_feature_names = dataset_metadata.features["action"]["names"]
+        cfg.relative_exclude_joints = ["gripper"]
+        print(dataset_metadata.features["action"]["names"])        # debug
         policy = ACTPolicy(cfg)
         preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)
 

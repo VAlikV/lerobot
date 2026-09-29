@@ -3,23 +3,19 @@ import time
 
 import draccus
 import torch
+from collections import deque
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import build_inference_frame, make_robot_action
 from lerobot.processor import (
-    AddBatchDimensionProcessorStep,
-    DataProcessorPipeline,
-    DeviceProcessorStep,
-    EnvTransition,
     RobotAction,
     RobotProcessorPipeline,
-    TransitionKey,
+    RelativeActionsProcessorStep,
+    AbsoluteActionsProcessorStep
 )
 from lerobot.processor.converters import (
-    create_transition,
-    identity_transition,
     robot_action_to_transition,
     transition_to_robot_action,
 )
@@ -71,6 +67,12 @@ def main() -> None:
         dataset_stats=dataset_metadata.stats,
     )
 
+    # debug
+    rel = next(s for s in preprocess.steps if isinstance(s, RelativeActionsProcessorStep))
+    abs_ = next(s for s in postprocess.steps if isinstance(s, AbsoluteActionsProcessorStep))
+    print(rel.enabled, abs_.enabled)
+    print("linked:", abs_.relative_step is rel)
+
     safety_pipeline = RobotProcessorPipeline[RobotAction, RobotAction](
         steps=[
             KukaJointBoundsAndSafety(joint_offset_deg=cfg.pipeline.joint_offset_deg),
@@ -82,8 +84,10 @@ def main() -> None:
     follower = KukaIiwa(cfg.robot)
     follower.connect()
 
+    action_queue = deque()
+
     dt_s = 1.0 / float(fps)
-    print(f"Rolling out {MODEL_ID} on {DATASET_ID} action space, fps={fps}")
+    print(f"Rolling out {MODEL_ID} on {DATASET_ID} action space, relative_actions={policy.config.use_relative_actions} fps={fps}")
 
     try:
         for episode_idx in range(MAX_EPISODES):
@@ -93,21 +97,26 @@ def main() -> None:
                 follower_smooth_move_to(follower, current, target, duration_s=3.0)
 
             policy.reset()
+            action_queue.clear()
             print(f"\n--- Episode {episode_idx + 1}/{MAX_EPISODES} ---")
 
             for step_idx in range(MAX_STEPS_PER_EPISODE):
                 start_t = time.perf_counter()
 
-                obs = follower.get_observation()
-                observation_frame = build_inference_frame(
-                    observation=obs, ds_features=dataset_metadata.features, device=device
-                    )
-                observation = preprocess(observation_frame)
+                if len(action_queue) == 0:
+                    obs = follower.get_observation()
+                    observation_frame = build_inference_frame(
+                        observation=obs, ds_features=dataset_metadata.features, device=device
+                        )
+                    observation = preprocess(observation_frame)
 
-                with torch.no_grad():
-                    action = policy.select_action(observation)
-                action = postprocess(action)
-
+                    with torch.no_grad():
+                        action = policy.predict_action_chunk(observation)
+                    chunk = chunk[:, :N_ACTION_STEPS]
+                    chunk = postprocess(chunk)
+                    action_queue.extend(chunk.squeeze(0))
+                
+                action = action_queue.popleft().unsqueeze(0)
                 robot_action = make_robot_action(action, dataset_metadata.features)
                 robot_action = safety_pipeline(robot_action)
 

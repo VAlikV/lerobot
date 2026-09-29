@@ -1,29 +1,79 @@
 # Kuka iiwa IL with LeRobot
 
-## Teleoperation with kinematic clone (leader arm)
+Imitation learning pipeline for Kuka iiwa with a kinematic clone as the leader arm.
 
-Activate `lerobot` environment.
+## Teleoperation
 
-First, calibrate the leader arm:
-```
+Activate the `lerobot` environment.
+
+### 1. Calibrate the leader arm
+
+```bash
 lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
 ```
-Second, set user configurations (ports, fps, etc.) inside choosen teleoperation script and run it:
 
+### 2. Run teleoperation
+
+Configure ports, FPS, and other parameters in the selected script:
+
+```bash
+python examples/kuka_iiwa/joint_teleop.py
 ```
-python examples/kuka_iiwa/joint_teleop.py   # or examples/kuka_iiwa/cartesian_teleop.py
+
+Cartesian teleoperation is also available:
+
+```bash
+python examples/kuka_iiwa/cartesian_teleop.py
 ```
 
-### Architecture
+## Dataset recording
 
-- **KukaLeader**
+Dataset recording is configured in:
 
-Responsible for reading data from stm32, sending command to stm32, and software-only callibration; implements Teleoperator interface.
+```text
+examples/kuka_iiwa/configs/record_config.json
+```
 
-Path: src/lerobot/teleoperators/kuka_leader
+The recording script supports:
 
-- **LeaderJointDeltaToFollowerEE**, **KukaEEBoundsAndSafety**, and **GripperPositionToDiscrete**
+* keyboard recording control (next, re-record, quit);
+* action scaling.
 
-Responsible for data transition from leader to follower format, implements RobotActionProcessorStep interface.
+Run:
 
-Path: src/lerobot/robots/kuka_iiwa/robot_kinematic_processor.py
+```bash
+python examples/kuka_iiwa/record.py
+```
+
+## ACT training
+
+Chunk-wise delta actions are supported in ACT. Enable relative actions in:
+
+> Note: ACT applies relative conversion before normalization (relative → normalize), so the normalizer always sees delta (relative) values. This means relative action stats are required for all of them when training with use_relative_actions=true.
+
+**Step 1:** Precompute relative action statistics for dataset
+
+```sh
+lerobot-edit-dataset \
+    --repo_id your_dataset \
+    --operation.type recompute_stats \
+    --operation.relative_action true \
+    --operation.chunk_size 100 \
+    --operation.relative_exclude_joints "['gripper']"
+```
+
+**Step 2:** Train with relative actions enabled
+
+Set `USE_RELATIVE_ACTIONS = True` in
+
+```text
+kuka/act/simple_training.py
+```
+
+## Inference
+
+Simple inference can be run with:
+
+```bash
+python examples/kuka_iiwa/rollout.py
+```
