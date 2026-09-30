@@ -67,6 +67,8 @@ def main() -> None:
         dataset_stats=dataset_metadata.stats,
     )
 
+    use_relative_actions = policy.config.use_relative_actions
+
     # debug
     rel = next(s for s in preprocess.steps if isinstance(s, RelativeActionsProcessorStep))
     abs_ = next(s for s in postprocess.steps if isinstance(s, AbsoluteActionsProcessorStep))
@@ -103,23 +105,37 @@ def main() -> None:
             for step_idx in range(MAX_STEPS_PER_EPISODE):
                 start_t = time.perf_counter()
 
-                if len(action_queue) == 0:
+                if not use_relative_actions:
+
                     obs = follower.get_observation()
                     observation_frame = build_inference_frame(
                         observation=obs, ds_features=dataset_metadata.features, device=device
-                        )
+                    )
                     observation = preprocess(observation_frame)
 
                     with torch.no_grad():
-                        action = policy.predict_action_chunk(observation)
-                    chunk = chunk[:, :N_ACTION_STEPS]
-                    chunk = postprocess(chunk)
-                    action_queue.extend(chunk.squeeze(0))
+                        action = policy.select_action(observation)
+                    action = postprocess(action)
+
+                else:
+
+                    if len(action_queue) == 0:
+                        obs = follower.get_observation()
+                        observation_frame = build_inference_frame(
+                            observation=obs, ds_features=dataset_metadata.features, device=device
+                            )
+                        observation = preprocess(observation_frame)
+
+                        with torch.no_grad():
+                            action = policy.predict_action_chunk(observation)
+                        chunk = action[:, :N_ACTION_STEPS]
+                        chunk = postprocess(chunk)
+                        action_queue.extend(chunk.squeeze(0))
+                    
+                    action = action_queue.popleft().unsqueeze(0)
                 
-                action = action_queue.popleft().unsqueeze(0)
                 robot_action = make_robot_action(action, dataset_metadata.features)
                 robot_action = safety_pipeline(robot_action)
-
                 follower.send_action(robot_action)
 
                 precise_sleep(max(dt_s - (time.perf_counter() - start_t), 0.0))

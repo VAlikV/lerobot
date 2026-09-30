@@ -783,3 +783,44 @@ def compute_relative_action_stats(
     )
 
     return stats
+
+import numpy as np
+
+def compute_relative_action_stats_mapped(
+    hf_dataset, features, chunk_size, exclude_joints=("gripper",),
+):
+    action_names = features["action"]["names"]
+    state_names = features["observation.state"]["names"]
+
+    # для каждой компоненты action ищем соответствующую компоненту state
+    state_idx = np.array([state_names.index(n) for n in action_names])
+    mask_step = RelativeActionsProcessorStep(
+       enabled=True, exclude_joints=list(exclude_joints), action_names=action_names,
+    )
+    mask = np.array(mask_step._build_mask(len(action_names)), dtype=np.float32)
+
+    all_actions = np.array(hf_dataset[ACTION], dtype=np.float32)
+    all_states = np.array(hf_dataset[OBS_STATE], dtype=np.float32)[:, state_idx]  # (N, 8)
+    episode_indices = np.array(hf_dataset["episode_index"])
+
+    valid_starts = _get_valid_chunk_starts(episode_indices, chunk_size)
+    offsets = np.arange(chunk_size)
+
+    running_stats = RunningQuantileStats()
+    for i in range(0, len(valid_starts), 50_000):
+        batch = valid_starts[i : i + 50_000]
+        idx = batch[:, None] + offsets[None, :]
+        chunks = all_actions[idx].copy()                      # (B, T, 8)
+        chunks -= all_states[batch][:, None, :] * mask        # относительные действия
+        running_stats.update(chunks.reshape(-1, chunks.shape[-1]))
+
+    stats = running_stats.get_statistics()
+    
+    total_frames = len(valid_starts) * chunk_size
+    logging.info(
+        f"Relative action stats ({len(valid_starts)} chunks, {total_frames} frames): "
+        f"mean={np.abs(stats['mean']).mean():.4f}, std={stats['std'].mean():.4f}, "
+        f"q01={stats['q01'].mean():.4f}, q99={stats['q99'].mean():.4f}"
+    )
+    
+    return stats

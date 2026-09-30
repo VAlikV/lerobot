@@ -133,6 +133,7 @@ class ACTConfig(PreTrainedConfig):
     relative_exclude_joints: list[str] = field(default_factory=lambda: ["gripper"])
     # Populated at runtime from dataset metadata by make_policy.
     action_feature_names: list[str] | None = None
+    state_feature_names: list[str] | None = None
 
     def __post_init__(self):
         super().__post_init__()

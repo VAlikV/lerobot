@@ -12,7 +12,6 @@ from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.utils.feature_utils import dataset_to_policy_features
-from lerobot.datasets.dataset_tools import recompute_stats
 
 PATH = "outputs/device_assemble/act_stage3"
 DATASET_ID = "local/kuka_device_assemble_stage3"
@@ -75,6 +74,7 @@ def main():
         cfg.use_relative_actions = USE_RELATIVE_ACTIONS
         cfg.action_feature_names = dataset_metadata.features["action"]["names"]
         cfg.relative_exclude_joints = ["gripper"]
+        cfg.state_feature_names = dataset_metadata.features["observation.state"]["names"]
         print(dataset_metadata.features["action"]["names"])        # debug
         policy = ACTPolicy(cfg)
         preprocessor, postprocessor = make_pre_post_processors(cfg, dataset_stats=dataset_metadata.stats)

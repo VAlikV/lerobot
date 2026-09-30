@@ -54,6 +54,7 @@ from .compute_stats import (
     aggregate_stats,
     compute_episode_stats,
     compute_relative_action_stats,
+    compute_relative_action_stats_mapped,
 )
 from .dataset_metadata import LeRobotDatasetMetadata
 from .image_writer import write_image
@@ -1656,12 +1657,15 @@ def recompute_stats(
     if relative_action and ACTION in features and OBS_STATE in features:
         if relative_exclude_joints is None:
             relative_exclude_joints = ["gripper"]
-        relative_action_stats = compute_relative_action_stats(
-            hf_dataset=dataset.hf_dataset,
-            features=features,
-            chunk_size=chunk_size,
-            exclude_joints=relative_exclude_joints,
-            num_workers=num_workers,
+        #relative_action_stats = compute_relative_action_stats(
+        #    hf_dataset=dataset.hf_dataset,
+        #    features=features,
+        #    chunk_size=chunk_size,
+        #    exclude_joints=relative_exclude_joints,
+        #    num_workers=num_workers,
+        #)
+        relative_action_stats = compute_relative_action_stats_mapped(
+            dataset.hf_dataset, features, chunk_size=chunk_size, exclude_joints=relative_exclude_joints
         )
         features_to_compute.pop(ACTION, None)
 
