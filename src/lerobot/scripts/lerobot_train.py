@@ -355,19 +355,36 @@ def make_dataloaders(
     eval_dataloader = None
     if eval_dataset is not None:
         eval_ds = eval_dataset
+        # State-imitation policies need a measured successor even for held-out loss.
+        # Opt-in keeps existing policies' evaluation sampling unchanged.
+        eval_sampler = None
+        eval_drop_last = getattr(active_cfg, "eval_drop_n_last_frames", 0)
+        if eval_drop_last:
+            eval_sampler = EpisodeAwareSampler(
+                eval_dataset.meta.episodes["dataset_from_index"],
+                eval_dataset.meta.episodes["dataset_to_index"],
+                episode_indices_to_use=eval_dataset.episodes,
+                drop_n_last_frames=eval_drop_last,
+                shuffle=False,
+                absolute_to_relative_idx=eval_dataset.absolute_to_relative_idx,
+            )
         if cfg.max_eval_samples > 0 and hasattr(eval_dataset, "hf_dataset"):
             task_arr = eval_dataset.hf_dataset.data.column("task_index").to_numpy()
+            candidates = eval_sampler.indices if eval_sampler is not None else list(range(len(eval_dataset)))
+            task_arr = task_arr[candidates]
             unique_tasks = sorted(set(task_arr.tolist()))
             per_task = max(1, cfg.max_eval_samples // len(unique_tasks))
             selected: list[int] = []
             for t in unique_tasks:
                 frames = (task_arr == t).nonzero()[0][:per_task]
-                selected.extend(frames.tolist())
+                selected.extend(candidates[i] for i in frames.tolist())
             eval_ds = torch.utils.data.Subset(eval_dataset, selected)
+            eval_sampler = None
 
         eval_collate_fn = lerobot_collate_fn if dataset.meta.has_language_columns else None
         eval_dataloader = torch.utils.data.DataLoader(
             eval_ds,
+            sampler=eval_sampler,
             batch_size=cfg.batch_size,
             shuffle=False,
             num_workers=cfg.num_workers,

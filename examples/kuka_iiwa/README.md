@@ -1,109 +1,114 @@
 # Kuka iiwa IL with LeRobot
 
-Imitation learning pipeline for Kuka iiwa with a kinematic clone as the leader arm.
-
 ## Teleoperation
 
-Activate the `lerobot` environment.
-
-### 1. Calibrate the leader arm
+Set the leader port and ID, then calibrate:
 
 ```bash
 lerobot-calibrate --teleop.type=kuka_leader --teleop.port=/dev/ttyACM0 --teleop.id=my_kuka_leader
 ```
 
-### 2. Run teleoperation
-
-Configure ports, FPS, and other parameters in the selected script:
+Configure ports and FPS in the selected script, then run:
 
 ```bash
 python examples/kuka_iiwa/joint_teleop.py
-```
-
-Cartesian teleoperation is also available:
-
-```bash
+# Or Cartesian teleoperation:
 python examples/kuka_iiwa/cartesian_teleop.py
 ```
 
 ## Dataset recording
 
-Dataset recording is configured in:
-
-```text
-examples/kuka_iiwa/configs/record_config.json
-```
-
-The recording script supports:
-
-* keyboard recording control (next, re-record, quit);
-* action scaling.
-
-Run:
+Set robot, cameras, FPS, dataset ID and episode settings in
+`examples/kuka_iiwa/configs/record_config.json`, then run:
 
 ```bash
 python examples/kuka_iiwa/record.py
 ```
 
-## ACT training
+Keyboard controls support advancing, re-recording and quitting episodes, and
+switching action scaling.
 
-Chunk-wise delta actions are supported in ACT. Enable relative actions in:
+## Action Chunking with TransformersACT
 
-> Note: ACT applies relative conversion before normalization (relative → normalize), so the normalizer always sees delta (relative) values. This means relative action stats are required for all of them when training with use_relative_actions=true.
+### Training
 
-**Step 1:** Precompute relative action statistics for dataset
+Set `DATASET_ID`, `PATH`, `DEVICE` and `USE_RELATIVE_ACTIONS` in
+`kuka/act/simple_training.py`.
 
-```sh
+For relative actions, first compute relative statistics using the training chunk size:
+
+```bash
 lerobot-edit-dataset \
-    --repo_id your_dataset \
-    --operation.type recompute_stats \
-    --operation.relative_action true \
-    --operation.chunk_size 100 \
-    --operation.relative_exclude_joints "['gripper']"
+  --repo_id your_dataset \
+  --operation.type recompute_stats \
+  --operation.relative_action true \
+  --operation.chunk_size 100 \
+  --operation.relative_exclude_joints "['gripper']"
 ```
 
-**Step 2:** Train with relative actions enabled
+Train:
 
-Set `USE_RELATIVE_ACTIONS = True` in
-
-```text
-kuka/act/simple_training.py
+```bash
+python kuka/act/simple_training.py
 ```
 
-## Inference
+### Inference
 
-Simple inference can be run with:
+Set `CONFIG_PATH`, `MODEL_ID`, `DATASET_ID`, `DEVICE` and `N_ACTION_STEPS` in
+`examples/kuka_iiwa/rollout.py`.
 
 ```bash
 python examples/kuka_iiwa/rollout.py
 ```
 
-## Dagger
+## Streaming Flow Matching (SFP)
 
-Adapted from the official LeRobot DAgger strategy.
+### Train and resume
 
-### State machine:
-```text
-PAUSED --> AUTONOMOUS --> PAUSED --> CORRECTING --> PAUSED
-The session starts in PAUSED, so nothing moves until you press `p`.
+Set the defaults at the top of `train_streaming_flow_matching.py` or override them on the command line.
+
+```bash
+# Deterministic:
+python examples/kuka_iiwa/train_streaming_flow_matching.py
+
+# Stochastic (separate output directory):
+python examples/kuka_iiwa/train_streaming_flow_matching.py \
+  --policy.variant=stochastic --output_dir=outputs/kuka_sfp_stochastic
+
+# Resume:
+python examples/kuka_iiwa/train_streaming_flow_matching.py \
+  --config_path=outputs/kuka_streaming_flow_matching/checkpoints/last/pretrained_model/train_config.json \
+  --resume=true --steps=100000
 ```
 
-### Keyboard:
-- p   - pause / resume the policy
-- c   - start / finish a correction (start: rewind -> sync -> recording / finish: the correction is moved to the pending buffer as one episode)
-- r   - discard the correction currently being recorded (and go back to PAUSED)
-- s   - toggle action scaling (same as in record script)
-- esc - stop the session (a correction in progress is kept)
+### Replay and Inference
 
+```bash
+# Offline replay; no hardware connection:
+python examples/kuka_iiwa/rollout_streaming_flow_matching.py \
+  --dry-run --device=cpu --max-steps=100
 
-### PAUSED -> CORRECTING sequence:
-1. "Rewind seconds?" prompt (0 / Enter = no rewind). The follower walks back along the
-    trajectory it has just executed (reverse playback of sent actions).
-2. "Press Enter to sync leader..." prompt.
-3. Leader is driven to the follower pose; scaling and leader filter are reset.
-4. Recording starts; frames are written into the episode buffer.
+# Real robot, refresh observations every 8 commands:
+python examples/kuka_iiwa/rollout_streaming_flow_matching.py \
+  --device=cuda --n-action-steps=8
+```
 
+Use `--n-action-steps=1` to refresh observations every tick, and
+`--integration-steps-per-action` to change integration resolution (default: `1`).
+Robot execution starts from the current pose without automatic homing; Ctrl+C stops it.
+
+## DAgger
+
+Set `MODEL_ID`, `POLICY_DATASET_ID` and `CONFIG_PATH` in `examples/kuka_iiwa/dagger.py`:
 
 ```bash
 python examples/kuka_iiwa/dagger.py
 ```
+
+The session starts paused. Keyboard controls:
+
+- `p`: pause/resume the policy.
+- `c`: start/finish a correction; follow the rewind and leader-sync prompts.
+- `r`: discard the current correction.
+- `s`: toggle action scaling.
+- `Esc`: stop; a correction in progress is kept.

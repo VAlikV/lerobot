@@ -15,10 +15,10 @@
 from lerobot.utils.action_interpolator import ActionInterpolator as ActionInterpolator
 
 from .act.configuration_act import ACTConfig as ACTConfig
-from .extended_act.configuration_act import ACTConfig as ExtendedACTConfig
 from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 from .eo1.configuration_eo1 import EO1Config as EO1Config
 from .evo1.configuration_evo1 import Evo1Config as Evo1Config
+from .extended_act.configuration_act import ACTConfig as ExtendedACTConfig
 from .factory import get_policy_class, make_policy, make_policy_config, make_pre_post_processors
 from .fastwam.configuration_fastwam import FastWAMConfig as FastWAMConfig
 from .gaussian_actor.configuration_gaussian_actor import GaussianActorConfig as GaussianActorConfig
@@ -31,6 +31,9 @@ from .pi0_fast.configuration_pi0_fast import PI0FastConfig as PI0FastConfig
 from .pi05.configuration_pi05 import PI05Config as PI05Config
 from .pretrained import PreTrainedPolicy as PreTrainedPolicy
 from .smolvla.configuration_smolvla import SmolVLAConfig as SmolVLAConfig
+from .streaming_flow_matching.configuration_streaming_flow_matching import (
+    StreamingFlowMatchingConfig as StreamingFlowMatchingConfig,
+)
 from .tdmpc.configuration_tdmpc import TDMPCConfig as TDMPCConfig
 from .utils import make_robot_action, prepare_observation_for_inference
 from .vla_jepa.configuration_vla_jepa import VLAJEPAConfig as VLAJEPAConfig
@@ -59,6 +62,7 @@ __all__ = [
     "PI0FastConfig",
     "PI05Config",
     "SmolVLAConfig",
+    "StreamingFlowMatchingConfig",
     "TDMPCConfig",
     "VLAJEPAConfig",
     "VQBeTConfig",

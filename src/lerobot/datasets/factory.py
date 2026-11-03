@@ -131,6 +131,11 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         episodes = resolve_episode_indices(
             cfg.dataset.episodes, ds_meta.total_episodes, cfg.dataset.exclude_episodes
         )
+        validate_metadata = getattr(cfg.trainable_config, "validate_dataset_metadata", None)
+        if callable(validate_metadata):
+            validate_metadata(ds_meta, episodes=episodes)
+        if cfg.dataset.streaming and cfg.trainable_config.type == "streaming_flow_matching":
+            raise ValueError("SFP state imitation requires map-style episode-aware sampling")
         if cfg.dataset.streaming and ds_meta.storage_format != DEFAULT_STORAGE_FORMAT:
             raise ValueError(
                 f"dataset.streaming=True is not supported for storage_format="
