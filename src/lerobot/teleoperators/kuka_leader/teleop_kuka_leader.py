@@ -189,10 +189,8 @@ class KukaLeader(Teleoperator):
         pass
 
     def send_goal_position(self, goal: RobotAction, hold_s: float = 3.0, tolerance_counts: int = 50) -> None:
-        """Wait up to hold_s for telemetry to resume after a blocking STM32 move.
-
-        A non-positive hold_s skips waiting. Resumed telemetry signals the end
-        of the blocking call; position tolerance is checked separately.
+        """
+        Wait up to hold_s for MOVE_DONE and a fresh STM32 position frame.
         """
         if not self.is_connected:
             raise RuntimeError(f"{self} is not connected.")
@@ -223,17 +221,10 @@ class KukaLeader(Teleoperator):
         sent_at = time.monotonic()
         self._reader.send(raw_targets)
 
-        try:
-            if hold_s > 0:
-                actual_raw = self._reader.wait_for_frame(timeout_s=hold_s, resume_after_ts=sent_at)
-            else:
-                actual_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
-        except ConnectionError:
-            logger.warning(
-                f"{self}: telemetry unavailable or did not resume after sending the goal position; "
-                f"cannot verify it was reached."
-            )
-            return
+        if hold_s > 0:
+            actual_raw = self._reader.wait_for_frame(timeout_s=hold_s, resume_after_ts=sent_at)
+        else:
+            actual_raw = self._reader.latest(max_age_s=self.config.max_frame_age_s)
 
         for idx, joint in enumerate(self.joint_names):
             deviation = abs(

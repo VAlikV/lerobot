@@ -16,7 +16,7 @@ import serial
 logger = logging.getLogger(__name__)
 
 FRAME_TERMINATOR = b"\n"
-STREAM_PAUSE_S = 0.1
+MOVE_DONE = b"MOVE_DONE"
 
 
 class SerialFrameReader(threading.Thread):
@@ -32,7 +32,7 @@ class SerialFrameReader(threading.Thread):
         self._latest: list[int] | None = None
         self._latest_ts: float = 0.0
         self._latest_monotonic_ts: float = 0.0
-        self._stream_resumed_ts: float = 0.0
+        self._move_completed_ts: float = 0.0
         self._stop_event = threading.Event()
         self._buffer = b""
 
@@ -51,18 +51,22 @@ class SerialFrameReader(threading.Thread):
                 continue
 
             *complete, self._buffer = self._buffer.split(FRAME_TERMINATOR)
-            if not complete:
-                continue
+            # Process every line: MOVE_DONE and telemetry can share one read.
+            for line in complete:
+                line = line.strip()
+                if line == MOVE_DONE:
+                    with self._frame_received:
+                        self._move_completed_ts = time.monotonic()
+                        self._frame_received.notify_all()
+                    continue
 
-            values = self._parse_frame(complete[-1].strip())
-            if values is not None:
+                values = self._parse_frame(line)
+                if values is None:
+                    continue
                 with self._frame_received:
-                    now = time.monotonic()
-                    if self._latest is not None and now - self._latest_monotonic_ts >= STREAM_PAUSE_S:
-                        self._stream_resumed_ts = now
                     self._latest = values
                     self._latest_ts = time.time()
-                    self._latest_monotonic_ts = now
+                    self._latest_monotonic_ts = time.monotonic()
                     self._frame_received.notify_all()
 
     def _parse_frame(self, line: bytes) -> list[int] | None:
@@ -107,23 +111,27 @@ class SerialFrameReader(threading.Thread):
             self._frame_received.notify_all()
 
     def wait_for_frame(self, timeout_s: float = 2.0, *, resume_after_ts: float | None = None) -> list[int]:
-        """Wait for the first valid frame, or for telemetry to resume after a command.
-
-        By default an existing frame can be returned immediately. With
-        ``resume_after_ts`` (time.monotonic()), require a frame following a
-        telemetry pause after that timestamp: STM32 stops streaming during a
-        blocking move, and frames still in transit do not signal completion.
+        """
+        Wait for a valid frame, optionally following explicit move completion.
         """
         deadline = time.monotonic() + timeout_s
         with self._frame_received:
             while self._latest is None or (
-                resume_after_ts is not None and self._stream_resumed_ts <= resume_after_ts
+                resume_after_ts is not None and (
+                    self._move_completed_ts <= resume_after_ts
+                    or self._latest_monotonic_ts <= self._move_completed_ts
+                )
             ):
                 if self._stop_event.is_set():
                     raise ConnectionError("STM32 reader stopped while waiting for a frame.")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ConnectionError(f"No matching STM32 frame received within {timeout_s}s.")
+                    if resume_after_ts is not None:
+                        raise ConnectionError(
+                            f"No MOVE_DONE followed by a position frame within {timeout_s}s; "
+                            "leader synchronization is not confirmed."
+                        )
+                    raise ConnectionError(f"No valid STM32 frame received within {timeout_s}s.")
                 self._frame_received.wait(timeout=remaining)
             return self._latest.copy()
 
