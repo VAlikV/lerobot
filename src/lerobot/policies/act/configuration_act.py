@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from dataclasses import dataclass, field
+from typing import Any
 
 from lerobot.configs import NormalizationMode, PreTrainedConfig
 from lerobot.optim import AdamWConfig
@@ -98,6 +99,10 @@ class ACTConfig(PreTrainedConfig):
     vision_backbone: str = "resnet18"
     pretrained_backbone_weights: str | None = "ResNet18_Weights.IMAGENET1K_V1"
     replace_final_stride_with_dilation: int = False
+    # Frozen DINOv2-S; architecture is embedded for offline checkpoint restoration.
+    dinov2_model_name: str = "facebook/dinov2-small"
+    dinov2_config: dict[str, Any] | None = None
+
     # Transformer layers.
     pre_norm: bool = False
     dim_model: int = 512
@@ -139,10 +144,15 @@ class ACTConfig(PreTrainedConfig):
         super().__post_init__()
 
         """Input validation (not exhaustive)."""
-        if not self.vision_backbone.startswith("resnet"):
+        if self.vision_backbone != "dinov2" and not self.vision_backbone.startswith("resnet"):
             raise ValueError(
-                f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
+                f"`vision_backbone` must be dinov2 or one of the ResNet variants. Got {self.vision_backbone}."
             )
+        if self.vision_backbone == "dinov2":
+            if self.dinov2_model_name != "facebook/dinov2-small":
+                raise ValueError("Only frozen facebook/dinov2-small without registers is supported")
+            if self.normalization_mapping.get("VISUAL") != NormalizationMode.MEAN_STD:
+                raise ValueError("DINOv2 requires VISUAL MEAN_STD normalization")
         if self.temporal_ensemble_coeff is not None and self.n_action_steps > 1:
             raise NotImplementedError(
                 "`n_action_steps` must be 1 when using temporal ensembling. This is "
@@ -168,6 +178,12 @@ class ACTConfig(PreTrainedConfig):
         return None
 
     def validate_features(self) -> None:
+        if self.vision_backbone == "dinov2":
+            for feature in self.image_features.values():
+                if len(feature.shape) != 3 or feature.shape[0] != 3:
+                    raise ValueError("DINOv2 requires RGB images in CHW format")
+                if any(size % 14 for size in feature.shape[1:]):
+                    raise ValueError("DINOv2 image height and width must be divisible by 14")
         if not self.image_features and not self.env_state_feature:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 

@@ -13,6 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from copy import deepcopy
 from typing import Any
 
 import torch
@@ -52,7 +53,6 @@ def make_act_pre_post_processors(
         pre-processor pipeline and the post-processor pipeline.
     """
 
-
     # OpenPi approach to chunk-wise relative actions
 
     relative_step = RelativeActionsProcessorStep(
@@ -61,6 +61,14 @@ def make_act_pre_post_processors(
         action_names=getattr(config, "action_feature_names", None),
         state_names=getattr(config, "state_feature_names", None),
     )
+
+    if config.vision_backbone == "dinov2":
+        dataset_stats = deepcopy(dataset_stats) if dataset_stats is not None else {}
+        for key in config.image_features:
+            dataset_stats[key] = {
+                "mean": torch.tensor([0.485, 0.456, 0.406]),
+                "std": torch.tensor([0.229, 0.224, 0.225]),
+            }
 
     steps = make_default_policy_processor_steps(config, dataset_stats)
 
