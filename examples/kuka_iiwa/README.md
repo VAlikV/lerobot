@@ -95,7 +95,6 @@ python examples/kuka_iiwa/rollout_streaming_flow_matching.py \
 
 Use `--n-action-steps=1` to refresh observations every tick, and
 `--integration-steps-per-action` to change integration resolution (default: `1`).
-Robot execution starts from the current pose without automatic homing; Ctrl+C stops it.
 
 ## DAgger
 

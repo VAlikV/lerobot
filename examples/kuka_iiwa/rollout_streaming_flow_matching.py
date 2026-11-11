@@ -7,11 +7,13 @@ that path loads recorded observations and never constructs a robot or camera.
 import argparse
 import json
 import logging
+import math
 import time
 from pathlib import Path
 
 import torch
 
+from lerobot.common.control_utils import follower_smooth_move_to
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.streaming_flow_matching.modeling_streaming_flow_matching import (
@@ -26,6 +28,7 @@ from lerobot.utils.robot_utils import precise_sleep
 MODEL_PATH = "outputs/kuka_streaming_flow_matching/checkpoints/last/pretrained_model_ema"
 DATASET_ID = "local/kuka_sfp"
 CONFIG_PATH = Path(__file__).parent / "configs/record_config.json"
+RESET_DURATION_S = 3.0
 
 
 def make_safety_pipeline(joint_offset_deg: float = 2.0) -> RobotProcessorPipeline:
@@ -133,11 +136,21 @@ def main() -> None:
         k for k, value in follower.observation_features.items() if value is float
     ] != policy.config.state_feature_names:
         raise ValueError("Robot state order differs from checkpoint")
+    # reset to pose
+    names = list(follower.action_features)
+    pose = recording.dataset.reset_pose
+    if len(pose) != len(names) or not all(math.isfinite(value) for value in pose):
+        raise ValueError("dataset.reset_pose must contain eight finite values in robot action order")
+    reset_target = dict(zip(names, pose, strict=True))
     period = 1 / metadata.fps
     try:
         follower.connect()
         for episode in range(args.episodes):
-            # Each episode starts at the robot's current measured pose. No automatic homing.
+            if reset_target is not None:
+                observation = follower.get_observation()
+                current = {name: observation[name] for name in follower.action_features}
+                follower_smooth_move_to(follower, current, reset_target, duration_s=RESET_DURATION_S)
+            # Begin a fresh flow from the measured pose after the reset movement.
             policy.reset()
             pre.reset()
             post.reset()
