@@ -10,10 +10,12 @@ Keyboard Controls:
     esc - stop the session (a correction in progress is kept)
 """
 
+import argparse
 import enum
 import json
 import threading
 import time
+from pathlib import Path
 from collections import deque
 from threading import Event, Lock
 
@@ -30,6 +32,7 @@ from lerobot.datasets import (
     create_initial_features,
 )
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import build_inference_frame, make_robot_action
@@ -51,30 +54,14 @@ from lerobot.robots.kuka_iiwa.robot_kinematic_processor import (
     KukaJointDeltaScaling,
 )
 from lerobot.teleoperators.kuka_leader import KukaLeader
-from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 from lerobot.utils.keyboard_input import create_key_listener
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
 
 from record_config import RecordingConfig
-from record_utils import _assert_pending_episode_indices, _finish_episode_buffer
-
-CONFIG_PATH = "examples/kuka_iiwa/configs/record_config.json"
-
-MODEL_ID = "outputs/device_assemble"
-POLICY_DATASET_ID = "local/kuka_test_1"
-DEVICE = "cuda"
-N_ACTION_STEPS = 30
-
-RESET_TO_POSE = True
-
-# Rewind
-MAX_REWIND_S = 15.0  # how much executed trajectory is kept
-REWIND_SPEED = 1.0  # 1.0 = same speed as it was executed; <1.0 = slower
-
-# Leader sync
-LEADER_SYNC_GRIPPER_POS = 45.0
+from record_utils import _assert_pending_episode_indices, _finish_episode_buffer, leader_gripper_sync_position
 
 # Keys
 KEY_PAUSE_RESUME = "p"
@@ -270,7 +257,7 @@ class KukaDAgger:
  
         self.use_relative_actions = policy.config.use_relative_actions
         self.action_queue: deque = deque()
-        self.history: deque = deque(maxlen=max(1, int(MAX_REWIND_S * self.fps)))
+        self.history: deque = deque(maxlen=max(1, int(cfg.dagger.max_rewind_s * self.fps)))
         self.last_action: dict | None = None
  
         self.pending_episode_buffers: list[dict] = []
@@ -297,6 +284,17 @@ class KukaDAgger:
             with torch.no_grad():
                 action = self.policy.select_action(observation)
             action = self.postprocess(action)
+        elif self.policy.config.temporal_ensemble_coeff is not None:
+            obs = self.follower.get_observation()
+            frame = build_inference_frame(
+                observation=obs, ds_features=self.policy_features, device=self.device
+            )
+            observation = self.preprocess(frame)
+            with torch.no_grad():
+                chunk = self.policy.predict_action_chunk(observation)
+            # Relative chunks must share absolute coordinates before averaging.
+            chunk = self.postprocess(chunk)
+            action = self.policy.temporal_ensembler.update(chunk)
         else:
             if len(self.action_queue) == 0:
                 obs = self.follower.get_observation()
@@ -306,7 +304,7 @@ class KukaDAgger:
                 observation = self.preprocess(frame)
                 with torch.no_grad():
                     chunk = self.policy.predict_action_chunk(observation)
-                chunk = chunk[:, :N_ACTION_STEPS]
+                chunk = chunk[:, :self.cfg.dagger.n_action_steps]
                 chunk = self.postprocess(chunk)
                 self.action_queue.extend(chunk.squeeze(0))
             action = self.action_queue.popleft().unsqueeze(0)
@@ -327,7 +325,7 @@ class KukaDAgger:
             return
  
         path = list(self.history)[-n:][::-1]  # newest -> oldest
-        dt = 1.0 / (self.fps * REWIND_SPEED)
+        dt = 1.0 / (self.fps * self.cfg.dagger.rewind_speed)
         print(f"[DAgger] rewinding {n / self.fps:.1f}s ({n} steps)...", flush=True)
  
         done = 0
@@ -356,7 +354,9 @@ class KukaDAgger:
  
         # 3) drive leader to the follower pose
         follower_obs = self.follower.get_observation()
-        follower_obs["gripper.pos"] = LEADER_SYNC_GRIPPER_POS
+        follower_obs["gripper.pos"] = leader_gripper_sync_position(
+            follower_obs["gripper.pos"], self.cfg.pipeline.gripper_threshold, self.cfg.pipeline.gripper_reverse
+        )
         self.leader.send_goal_position(
             follower_obs,
             hold_s=3.0,
@@ -452,9 +452,19 @@ class KukaDAgger:
  
  
 def main() -> None:
-    cfg = load_config(CONFIG_PATH)
+    parser = argparse.ArgumentParser(description="Run KUKA DAgger and record operator corrections.")
+    parser.add_argument("--config", required=True, help="Path to the JSON configuration.")
+    parser.add_argument("--dataset-id", required=True, help="Correction dataset repo ID to create or resume.")
+    parser.add_argument(
+        "--policy-dataset-id", required=True, help="Source dataset repo ID for policy features and statistics."
+    )
+    parser.add_argument("--model-id", required=True, help="Model repo ID or local checkpoint path.")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    cfg.dataset.repo_id = args.dataset_id
     fps = cfg.fps
-    device = torch.device(DEVICE if torch.cuda.is_available() or DEVICE == "cpu" else "cpu")
+    device = torch.device(cfg.dagger.device if torch.cuda.is_available() or cfg.dagger.device == "cpu" else "cpu")
  
     follower = KukaIiwa(cfg.robot)
     leader = KukaLeader(cfg.leader)
@@ -482,14 +492,16 @@ def main() -> None:
     )
  
     # policy
-    policy_meta = LeRobotDatasetMetadata(POLICY_DATASET_ID)
-    policy = ACTPolicy.from_pretrained(MODEL_ID)
-    policy.config.n_action_steps = N_ACTION_STEPS
+    policy_meta = LeRobotDatasetMetadata(args.policy_dataset_id)
+    policy_config = ACTConfig.from_pretrained(args.model_id)
+    policy_config.temporal_ensemble_coeff = cfg.dagger.temporal_ensemble_coeff
+    policy_config.n_action_steps = 1 if cfg.dagger.temporal_ensemble_coeff is not None else cfg.dagger.n_action_steps
+    policy = ACTPolicy.from_pretrained(args.model_id, config=policy_config)
     policy.to(device)
     policy.eval()
     preprocess, postprocess = make_pre_post_processors(
         policy.config,
-        pretrained_path=MODEL_ID,
+        pretrained_path=args.model_id,
         dataset_stats=policy_meta.stats,
     )
  
@@ -509,10 +521,11 @@ def main() -> None:
     )
     num_cameras = len(getattr(follower, "cameras", {}) or {})
  
-    if cfg.dataset.resume:
+    dataset_root = Path(cfg.dataset.root) if cfg.dataset.root else HF_LEROBOT_HOME / cfg.dataset.repo_id
+    if dataset_root.exists():
         dataset = LeRobotDataset.resume(
             cfg.dataset.repo_id,
-            root=cfg.dataset.root,
+            root=dataset_root,
             image_writer_processes=0,
             image_writer_threads=4 * max(num_cameras, 1),
         )
@@ -521,7 +534,7 @@ def main() -> None:
         dataset = LeRobotDataset.create(
             cfg.dataset.repo_id,
             fps,
-            root=cfg.dataset.root,
+            root=dataset_root,
             robot_type=follower.name,
             features=dataset_features,
             use_videos=True,
@@ -556,7 +569,7 @@ def main() -> None:
         if not leader.is_connected or not follower.is_connected:
             raise ValueError("Robot or teleop is not connected!")
  
-        if RESET_TO_POSE:
+        if cfg.dagger.reset_to_pose:
             current = follower.get_observation()
             target = dict(zip(follower.action_features.keys(), cfg.dataset.reset_pose))
             follower_smooth_move_to(follower, current, target, duration_s=3.0)

@@ -27,7 +27,7 @@ from lerobot.utils.robot_utils import precise_sleep
 
 MODEL_PATH = "outputs/kuka_streaming_flow_matching/checkpoints/last/pretrained_model_ema"
 DATASET_ID = "local/kuka_sfp"
-CONFIG_PATH = Path(__file__).parent / "configs/record_config.json"
+CONFIG_PATH = Path(__file__).parent / "configs/record_rollout_config.json"
 RESET_DURATION_S = 3.0
 
 

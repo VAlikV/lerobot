@@ -8,8 +8,10 @@ esc / q - Immediately stop the session.
       s - Scale robot actions
 """
 
+import argparse
 import json
 import time
+from pathlib import Path
 import draccus
 
 from lerobot.utils.robot_utils import precise_sleep
@@ -26,7 +28,7 @@ from lerobot.datasets import (
     create_initial_features,
     safe_stop_image_writer,
 )
-from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME, OBS_STR
 from lerobot.utils.feature_utils import build_dataset_frame, combine_feature_dicts
 
 from lerobot.robots.kuka_iiwa import KukaIiwa
@@ -40,9 +42,7 @@ from record_config import (
     RecordingConfig
 )
 from keyboard_controls import init_kuka_keyboard_listener
-from record_utils import _finish_episode_buffer, _assert_pending_episode_indices
-
-CONFIG_PATH = "examples/kuka_iiwa/configs/record_config.json"
+from record_utils import _finish_episode_buffer, _assert_pending_episode_indices, leader_gripper_sync_position
 
 # Main record episode loop
 # Optionally can be switched to record_loop from lerobot.scripts.lerobot_record
@@ -92,7 +92,9 @@ def _reset_phase(
     reset_to_pose: bool,
     reset_pose: list[float],
     duration_s: float,
-    joint_scaler
+    joint_scaler,
+    gripper_threshold: float,
+    gripper_reverse: bool,
 ) -> None:
 
     if reset_to_pose:
@@ -103,7 +105,9 @@ def _reset_phase(
         input("\nPress Enter to sync leader to follower home position...")
         
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 45.0
+        follower_obs["gripper.pos"] = leader_gripper_sync_position(
+            follower_obs["gripper.pos"], gripper_threshold, gripper_reverse
+        )
 
         leader.send_goal_position(
             follower_obs,
@@ -151,7 +155,13 @@ def _log_say_console(text: str, play_sound: bool) -> None:
 
 def main():
 
-    cfg = load_config(CONFIG_PATH)
+    parser = argparse.ArgumentParser(description="Record KUKA demonstrations.")
+    parser.add_argument("--config", required=True, help="Path to the JSON configuration.")
+    parser.add_argument("--dataset-id", required=True, help="Dataset repo ID to create or resume.")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    cfg.dataset.repo_id = args.dataset_id
 
     fps = cfg.fps
 
@@ -192,10 +202,11 @@ def main():
 
     num_cameras = len(getattr(follower, "cameras", {}) or {})
 
-    if cfg.dataset.resume:
+    dataset_root = Path(cfg.dataset.root) if cfg.dataset.root else HF_LEROBOT_HOME / cfg.dataset.repo_id
+    if dataset_root.exists():
         dataset = LeRobotDataset.resume(
             cfg.dataset.repo_id,
-            root=cfg.dataset.root,
+            root=dataset_root,
             image_writer_processes=0,
             image_writer_threads=4 * max(num_cameras, 1),
         )
@@ -204,7 +215,7 @@ def main():
         dataset = LeRobotDataset.create(
             cfg.dataset.repo_id,
             fps,
-            root=cfg.dataset.root,
+            root=dataset_root,
             robot_type=follower.name,
             features=dataset_features,
             use_videos=True,
@@ -231,7 +242,9 @@ def main():
         input("\nPress Enter to sync leader to follower home position...")
 
         follower_obs = follower.get_observation()
-        follower_obs["gripper.pos"] = 45.0
+        follower_obs["gripper.pos"] = leader_gripper_sync_position(
+            follower_obs["gripper.pos"], cfg.pipeline.gripper_threshold, cfg.pipeline.gripper_reverse
+        )
 
         leader.send_goal_position(
             follower_obs,
@@ -262,7 +275,7 @@ def main():
                 _reset_phase(
                     follower, leader, pipeline, events, fps, 
                     cfg.dataset.reset_to_pose, cfg.dataset.reset_pose, cfg.dataset.reset_time_s,
-                    joint_scaler
+                    joint_scaler, cfg.pipeline.gripper_threshold, cfg.pipeline.gripper_reverse
                 )
 
             if events["rerecord_episode"]:

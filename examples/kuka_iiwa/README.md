@@ -18,11 +18,13 @@ python examples/kuka_iiwa/cartesian_teleop.py
 
 ## Dataset recording
 
-Set robot, cameras, FPS, dataset ID and episode settings in
-`examples/kuka_iiwa/configs/record_config.json`, then run:
+Set robot, cameras, FPS and episode settings in
+`examples/kuka_iiwa/configs/record_rollout_config.json`, then run:
 
 ```bash
-python examples/kuka_iiwa/record.py
+python examples/kuka_iiwa/record.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_test_2
 ```
 
 Keyboard controls support advancing, re-recording and quitting episodes, and
@@ -54,11 +56,13 @@ python kuka/act/simple_training.py
 
 ### Inference
 
-Set `CONFIG_PATH`, `MODEL_ID`, `DATASET_ID`, `DEVICE` and `N_ACTION_STEPS` in
-`examples/kuka_iiwa/rollout.py`.
+Set execution options in the `rollout` section of the shared JSON config.
 
 ```bash
-python examples/kuka_iiwa/rollout.py
+python examples/kuka_iiwa/rollout.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_test_2 \
+    --model-id outputs/device_assemble
 ```
 
 ## Streaming Flow Matching (SFP)
@@ -98,10 +102,14 @@ Use `--n-action-steps=1` to refresh observations every tick, and
 
 ## DAgger
 
-Set `MODEL_ID`, `POLICY_DATASET_ID` and `CONFIG_PATH` in `examples/kuka_iiwa/dagger.py`:
+Set execution options in the `dagger` section of the shared JSON config:
 
 ```bash
-python examples/kuka_iiwa/dagger.py
+python examples/kuka_iiwa/dagger.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_corrections_1 \
+    --policy-dataset-id local/kuka_test_2 \
+    --model-id outputs/device_assemble
 ```
 
 The session starts paused. Keyboard controls:
