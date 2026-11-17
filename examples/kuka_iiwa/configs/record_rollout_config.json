@@ -59,9 +59,7 @@
     },
 
     "dataset": {
-        "repo_id": "local/kuka_test_1",
         "task": "kuka_assemble",
-        "resume": false,
         "root": null,
 
         "num_episodes": 5,
@@ -72,5 +70,23 @@
         "reset_time_s": 2.0,
 
         "use_tts": true
+    },
+
+    "rollout": {
+        "device": "cuda",
+        "max_episodes": 5,
+        "max_steps_per_episode": 10000,
+        "n_action_steps": 30,
+        "temporal_ensemble_coeff": null,
+        "reset_to_pose": true
+    },
+
+    "dagger": {
+        "device": "cuda",
+        "n_action_steps": 30,
+        "temporal_ensemble_coeff": null,
+        "reset_to_pose": true,
+        "max_rewind_s": 15.0,
+        "rewind_speed": 1.0
     }
 }

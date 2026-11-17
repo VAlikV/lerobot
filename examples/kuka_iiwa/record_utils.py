@@ -1,6 +1,12 @@
 from lerobot.datasets import LeRobotDataset
 
 
+def leader_gripper_sync_position(follower_position: float, threshold: float, reverse: bool) -> float:
+    """Place the leader on the threshold side matching the follower's open/closed state."""
+    is_open = follower_position > 0
+    return threshold + (10.0 if is_open != reverse else -10.0)
+
+
 def _finish_episode_buffer(dataset: LeRobotDataset, *, rerecord: bool) -> dict | None:
     """Detach an accepted episode, or discard a take while preserving its index.
  
