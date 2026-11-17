@@ -31,7 +31,7 @@ python examples/kuka_iiwa/cartesian_teleop.py
 Dataset recording is configured in:
 
 ```text
-examples/kuka_iiwa/configs/record_config.json
+examples/kuka_iiwa/configs/record_rollout_config.json
 ```
 
 The recording script supports:
@@ -42,14 +42,14 @@ The recording script supports:
 Run:
 
 ```bash
-python examples/kuka_iiwa/record.py
+python examples/kuka_iiwa/record.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_test_2
 ```
 
 ## ACT training
 
-Chunk-wise delta actions are supported in ACT. Enable relative actions in:
-
-> Note: ACT applies relative conversion before normalization (relative → normalize), so the normalizer always sees delta (relative) values. This means relative action stats are required for all of them when training with use_relative_actions=true.
+Chunk-wise delta actions are supported in ACT.
 
 **Step 1:** Precompute relative action statistics for dataset
 
@@ -75,7 +75,19 @@ kuka/act/simple_training.py
 Simple inference can be run with:
 
 ```bash
-python examples/kuka_iiwa/rollout.py
+python examples/kuka_iiwa/rollout.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_test_2 \
+    --model-id outputs/device_assemble
+```
+
+### Record policy rollouts
+
+```bash
+python examples/kuka_iiwa/rollout_record.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_test_2 \
+    --model-id outputs/device_assemble
 ```
 
 ## Dagger
@@ -105,5 +117,9 @@ The session starts in PAUSED, so nothing moves until you press `p`.
 
 
 ```bash
-python examples/kuka_iiwa/dagger.py
+python examples/kuka_iiwa/dagger.py \
+    --config examples/kuka_iiwa/configs/record_rollout_config.json \
+    --dataset-id local/kuka_corrections_1 \
+    --policy-dataset-id local/kuka_test_2 \
+    --model-id outputs/device_assemble
 ```

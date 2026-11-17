@@ -1,3 +1,4 @@
+import argparse
 import json
 import time
 
@@ -6,6 +7,7 @@ import torch
 from collections import deque
 
 from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.policies.act.configuration_act import ACTConfig
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_pre_post_processors
 from lerobot.policies.utils import build_inference_frame, make_robot_action
@@ -27,20 +29,6 @@ from lerobot.utils.robot_utils import precise_sleep
 
 from record_config import RecordingConfig
 
-CONFIG_PATH = "lerobot/examples/kuka_iiwa/configs/record_config.json"
-
-MODEL_ID = "outputs/device_assemble"
-DATASET_ID = "local/kuka_test_1"
-DEVICE = "cuda"
-
-MAX_EPISODES = 5
-MAX_STEPS_PER_EPISODE = 10000
-
-N_ACTION_STEPS = 30
-
-RESET_TO_POSE = True
-
-
 def load_config(path: str) -> RecordingConfig:
     with open(path, "r") as f:
         raw_cfg = json.load(f)
@@ -48,22 +36,29 @@ def load_config(path: str) -> RecordingConfig:
 
 
 def main() -> None:
-    device = torch.device(DEVICE if torch.cuda.is_available() or DEVICE == "cpu" else "cpu")
+    parser = argparse.ArgumentParser(description="Run an ACT policy on KUKA.")
+    parser.add_argument("--config", required=True, help="Path to the JSON configuration.")
+    parser.add_argument("--dataset-id", required=True, help="Dataset repo ID for policy features and statistics.")
+    parser.add_argument("--model-id", required=True, help="Model repo ID or local checkpoint path.")
+    args = parser.parse_args()
 
-    cfg = load_config(CONFIG_PATH)
+    cfg = load_config(args.config)
+    device = torch.device(cfg.rollout.device if torch.cuda.is_available() or cfg.rollout.device == "cpu" else "cpu")
     fps = cfg.fps
 
     reset_pose = cfg.dataset.reset_pose
 
-    dataset_metadata = LeRobotDatasetMetadata(DATASET_ID)
+    dataset_metadata = LeRobotDatasetMetadata(args.dataset_id)
 
-    policy = ACTPolicy.from_pretrained(MODEL_ID)
-    policy.config.n_action_steps = N_ACTION_STEPS
+    policy_config = ACTConfig.from_pretrained(args.model_id)
+    policy_config.temporal_ensemble_coeff = cfg.rollout.temporal_ensemble_coeff
+    policy_config.n_action_steps = 1 if cfg.rollout.temporal_ensemble_coeff is not None else cfg.rollout.n_action_steps
+    policy = ACTPolicy.from_pretrained(args.model_id, config=policy_config)
     policy.to(device)
     policy.eval()
     preprocess, postprocess = make_pre_post_processors(
         policy.config,
-        pretrained_path=MODEL_ID,
+        pretrained_path=args.model_id,
         dataset_stats=dataset_metadata.stats,
     )
 
@@ -83,20 +78,20 @@ def main() -> None:
     action_queue = deque()
 
     dt_s = 1.0 / float(fps)
-    print(f"Rolling out {MODEL_ID} on {DATASET_ID} action space, relative_actions={policy.config.use_relative_actions} fps={fps}")
+    print(f"Rolling out {args.model_id} on {args.dataset_id} action space, relative_actions={policy.config.use_relative_actions} fps={fps}")
 
     try:
-        for episode_idx in range(MAX_EPISODES):
-            if RESET_TO_POSE:
+        for episode_idx in range(cfg.rollout.max_episodes):
+            if cfg.rollout.reset_to_pose:
                 current = follower.get_observation()
                 target = dict(zip(follower.action_features.keys(), reset_pose))
                 follower_smooth_move_to(follower, current, target, duration_s=3.0)
 
             policy.reset()
             action_queue.clear()
-            print(f"\n--- Episode {episode_idx + 1}/{MAX_EPISODES} ---")
+            print(f"\n--- Episode {episode_idx + 1}/{cfg.rollout.max_episodes} ---")
 
-            for step_idx in range(MAX_STEPS_PER_EPISODE):
+            for step_idx in range(cfg.rollout.max_steps_per_episode):
                 start_t = time.perf_counter()
 
                 if not use_relative_actions:
@@ -111,6 +106,18 @@ def main() -> None:
                         action = policy.select_action(observation)
                     action = postprocess(action)
 
+                elif policy.config.temporal_ensemble_coeff is not None:
+                    obs = follower.get_observation()
+                    observation_frame = build_inference_frame(
+                        observation=obs, ds_features=dataset_metadata.features, device=device
+                    )
+                    observation = preprocess(observation_frame)
+                    with torch.no_grad():
+                        chunk = policy.predict_action_chunk(observation)
+                    # Relative chunks must share absolute coordinates before averaging.
+                    chunk = postprocess(chunk)
+                    action = policy.temporal_ensembler.update(chunk)
+
                 else:
 
                     if len(action_queue) == 0:
@@ -122,7 +129,7 @@ def main() -> None:
 
                         with torch.no_grad():
                             action = policy.predict_action_chunk(observation)
-                        chunk = action[:, :N_ACTION_STEPS]
+                        chunk = action[:, :cfg.rollout.n_action_steps]
                         chunk = postprocess(chunk)
                         action_queue.extend(chunk.squeeze(0))
                     

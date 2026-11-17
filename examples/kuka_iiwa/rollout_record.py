@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 
 from lerobot.policies.utils import build_inference_frame, make_robot_action
+from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.utils.feature_utils import build_dataset_frame, dataset_to_policy_features
 from lerobot.utils.robot_utils import precise_sleep
 
@@ -65,25 +66,12 @@ def record_episode(
 
 
 def parse_args():
-    """Parse paths separately for training metadata and output recording."""
+    """Keep launch settings in JSON and accept only the config, dataset and model."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path(__file__).parent / "configs/record_config.json")
-    parser.add_argument("--policy", type=Path, required=True)
-    parser.add_argument("--source-dataset", type=Path, required=True)
-    parser.add_argument("--repo-id", required=True)
-    parser.add_argument("--root", type=Path, required=True)
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--num-episodes", type=int, default=5)
-    parser.add_argument("--episode-time-s", type=float, default=30)
-    parser.add_argument("--n-action-steps", type=int)
-    parser.add_argument("--temporal-ensemble-coeff", help="Number or none; omitted keeps checkpoint setting")
-    parser.add_argument("--reset-to-pose", action=argparse.BooleanOptionalAction, default=False)
-    args = parser.parse_args()
-    if args.num_episodes < 1 or args.episode_time_s <= 0:
-        parser.error("Episode count and duration must be positive")
-    if args.root.exists():
-        parser.error("Output root already exists; choose a new directory (resume is not supported)")
-    return args
+    parser.add_argument("--config", type=Path, required=True, help="Path to the JSON configuration.")
+    parser.add_argument("--dataset-id", required=True, help="Source dataset repo ID; records to <dataset-id>_rollout.")
+    parser.add_argument("--model-id", required=True, help="Model repo ID or local checkpoint path.")
+    return parser.parse_args()
 
 
 def cleanup(follower, listener, dataset):
@@ -123,21 +111,24 @@ def main():
     from lerobot.robots.kuka_iiwa.robot_kinematic_processor import KukaJointBoundsAndSafety
 
     cfg = draccus.decode(RecordingConfig, json.loads(args.config.read_text()))
+    if cfg.dataset.num_episodes < 1 or cfg.dataset.episode_time_s <= 0:
+        raise ValueError("Episode count and duration must be positive")
+    if cfg.rollout.max_steps_per_episode < 1:
+        raise ValueError("max_steps_per_episode must be positive")
+    output_id = f"{args.dataset_id}_rollout"
+    output_root = Path(cfg.dataset.root) if cfg.dataset.root else HF_LEROBOT_HOME / output_id
+    if output_root.exists():
+        raise FileExistsError(f"Output root already exists: {output_root}; resume is not supported")
+    device = cfg.rollout.device if torch.cuda.is_available() or cfg.rollout.device == "cpu" else "cpu"
     if cfg.robot.use_task_space or not cfg.robot.use_direct_joint_control:
         raise ValueError("This rollout requires direct joint control in absolute joint coordinates")
-    if not (args.source_dataset / "meta/info.json").is_file():
-        raise FileNotFoundError("Source dataset must contain local meta/info.json")
-    metadata = LeRobotDatasetMetadata("local/rollout_source", root=args.source_dataset)
+    metadata = LeRobotDatasetMetadata(args.dataset_id)
     if metadata.fps != cfg.fps:
         raise ValueError("Control FPS must match source dataset FPS")
-    config = ACTConfig.from_pretrained(args.policy)
-    config.device = args.device
-    if args.n_action_steps is not None:
-        config.n_action_steps = args.n_action_steps
-    if args.temporal_ensemble_coeff is not None:
-        config.temporal_ensemble_coeff = (
-            None if args.temporal_ensemble_coeff.lower() == "none" else float(args.temporal_ensemble_coeff)
-        )
+    config = ACTConfig.from_pretrained(args.model_id)
+    config.device = device
+    config.temporal_ensemble_coeff = cfg.rollout.temporal_ensemble_coeff
+    config.n_action_steps = 1 if config.temporal_ensemble_coeff is not None else cfg.rollout.n_action_steps
     if not 1 <= config.n_action_steps <= config.chunk_size:
         raise ValueError("n_action_steps must be in [1, chunk_size]")
     if config.temporal_ensemble_coeff is not None and config.n_action_steps != 1:
@@ -154,11 +145,11 @@ def main():
         saved_names = getattr(config, field, None)
         if saved_names is not None and saved_names != names:
             raise ValueError(f"Checkpoint/source dataset name order mismatch: {field}")
-    policy = ACTPolicy.from_pretrained(args.policy, config=config, strict=True).eval()
+    policy = ACTPolicy.from_pretrained(args.model_id, config=config, strict=True).eval()
     pre, post = make_pre_post_processors(
         config,
-        pretrained_path=args.policy,
-        preprocessor_overrides={"device_processor": {"device": args.device}},
+        pretrained_path=args.model_id,
+        preprocessor_overrides={"device_processor": {"device": device}},
     )
     follower = KukaIiwa(cfg.robot)
     action_names = metadata.features["action"]["names"]
@@ -190,9 +181,9 @@ def main():
     listener = None
     try:
         dataset = LeRobotDataset.create(
-            args.repo_id,
+            output_id,
             cfg.fps,
-            root=args.root,
+            root=output_root,
             features=features,
             robot_type=follower.name,
             use_videos=True,
@@ -202,11 +193,11 @@ def main():
             image_writer_processes=0,
             image_writer_threads=0,
         )
-        (args.root / "rollout_config.json").write_text(
+        (output_root / "rollout_config.json").write_text(
             json.dumps(
                 {
-                    "policy": str(args.policy.resolve()),
-                    "source_dataset": str(args.source_dataset.resolve()),
+                    "policy": args.model_id,
+                    "source_dataset": args.dataset_id,
                     "n_action_steps": config.n_action_steps,
                     "temporal_ensemble_coeff": config.temporal_ensemble_coeff,
                     "task": cfg.dataset.task,
@@ -218,7 +209,7 @@ def main():
         follower.connect()
         events = {"stop_recording": False}
         episode = 0
-        while episode < args.num_episodes and not events["stop_recording"]:
+        while episode < cfg.dataset.num_episodes and not events["stop_recording"]:
             if listener is not None:
                 listener.stop()
                 listener = None
@@ -226,7 +217,7 @@ def main():
             listener, events = init_kuka_keyboard_listener()
             if events["stop_recording"]:
                 break
-            if args.reset_to_pose:
+            if cfg.rollout.reset_to_pose:
                 follower_smooth_move_to(
                     follower,
                     follower.get_observation(),
@@ -248,15 +239,16 @@ def main():
                 events,
                 cfg.dataset.task,
                 cfg.fps,
-                args.episode_time_s,
-                args.device,
+                cfg.dataset.episode_time_s,
+                device,
+                max_steps=cfg.rollout.max_steps_per_episode,
             )
             if events["rerecord_episode"]:
                 dataset.clear_episode_buffer()
             elif dataset.has_pending_frames():
                 dataset.save_episode()
                 episode += 1
-                print(f"Saved episode {episode}/{args.num_episodes}")
+                print(f"Saved episode {episode}/{cfg.dataset.num_episodes}")
     except KeyboardInterrupt:
         print("Interrupted; current partial episode will be discarded.")
     finally:

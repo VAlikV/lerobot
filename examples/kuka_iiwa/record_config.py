@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lerobot.cameras.opencv import OpenCVCameraConfig
 from lerobot.cameras import CameraConfig
@@ -16,10 +16,8 @@ class PipelineConfig:
 
 @dataclass
 class DatasetConfig:
-    repo_id: str
     task: str
 
-    resume: bool
     root: str | None
 
     num_episodes: int
@@ -30,6 +28,27 @@ class DatasetConfig:
     reset_time_s: float
 
     use_tts: bool
+    repo_id: str | None = None
+
+
+@dataclass
+class RolloutConfig:
+    device: str = "cuda"
+    max_episodes: int = 5
+    max_steps_per_episode: int = 10000
+    n_action_steps: int = 30
+    temporal_ensemble_coeff: float | None = None
+    reset_to_pose: bool = True
+
+
+@dataclass
+class DaggerConfig:
+    device: str = "cuda"
+    n_action_steps: int = 30
+    temporal_ensemble_coeff: float | None = None
+    reset_to_pose: bool = True
+    max_rewind_s: float = 15.0
+    rewind_speed: float = 1.0
 
 
 @dataclass
@@ -39,3 +58,5 @@ class RecordingConfig:
     leader: KukaLeaderConfig
     pipeline: PipelineConfig
     dataset: DatasetConfig
+    rollout: RolloutConfig = field(default_factory=RolloutConfig)
+    dagger: DaggerConfig = field(default_factory=DaggerConfig)
