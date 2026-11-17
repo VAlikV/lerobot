@@ -13,6 +13,7 @@ import json
 import time
 from pathlib import Path
 import draccus
+import cv2
 
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.utils import log_say
@@ -63,6 +64,12 @@ def _record_episode(
         t0 = time.perf_counter()
 
         obs = follower.get_observation()
+
+        for cam_name in follower.cameras:
+            rgb = obs[cam_name]
+            cv2.imshow(cam_name, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+
+        cv2.waitKey(1)
 
         joint_scaler.set_enabled(events["apply_scale"])
 
@@ -314,6 +321,8 @@ def main():
 
         if listener is not None:
             listener.stop()
+
+        cv2.destroyAllWindows()
 
         print(f"Dataset finalized -> {cfg.dataset.repo_id}")
 
